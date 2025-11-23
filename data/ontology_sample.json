@@ -1,0 +1,379 @@
+{
+  "nodes": [
+    {
+      "id": "http://example.org/root",
+      "label": "Корень",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Верхнеуровневый узел, объединяющий все классы компетенций, связанные с металлургией и литейным производством."
+    },
+    {
+      "id": "http://example.org/competencies#Компетенции",
+      "label": "Компетенции",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Совокупность профессиональных навыков и знаний, необходимых сотрудникам для выполнения НИОКР, разработки технологий и управления литейным производством."
+    },
+    {
+      "id": "http://example.org/competencies#Металлургия",
+      "label": "Металлургия",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Глубокое понимание физико-химических свойств металлов и сплавов, процессов плавки, модифицирования и термообработки."
+    },
+    {
+      "id": "http://example.org/competencies#Литейное_производство",
+      "label": "Литейное производство",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Компетенции по подготовке литейных форм, управлению заливкой и постобработке отливок для получения стабильного качества."
+    },
+    {
+      "id": "http://example.org/competencies#Фундаментальные_исследовательские_компетенции",
+      "label": "Фундаментальные исследовательские компетенции",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Научные методы изучения материалов, построение теоретических моделей и планирование экспериментов для поиска новых эффектов."
+    },
+    {
+      "id": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "label": "Прикладные исследовательские компетенции",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Отработка гипотез на практике, лабораторные и полупромышленные испытания, подтверждение технологических решений."
+    },
+    {
+      "id": "http://example.org/competencies#Технологические_компетенции",
+      "label": "Технологические компетенции",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Навыки разработки и оптимизации литейных технологий, оборудования, режимов нагрева, охлаждения и постобработки."
+    },
+    {
+      "id": "http://example.org/competencies#Инструментальные",
+      "label": "Инструментальные",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Владение программными и аппаратными средствами измерения, диагностики и автоматизации литейных процессов."
+    },
+    {
+      "id": "http://example.org/competencies#Производственные",
+      "label": "Производственные",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Организация серийного выпуска литых изделий, управление ресурсами, оборудованием и качеством на площадке."
+    },
+    {
+      "id": "http://example.org/competencies#Теория_литейных_процессов",
+      "label": "Теория литейных процессов",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Законы тепломассообмена и кристаллизации, объясняющие происхождение усадок, пор, напряжений и других дефектов."
+    },
+    {
+      "id": "http://example.org/competencies#Моделирование_и_расчеты",
+      "label": "Моделирование и расчеты",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Применение CAE/CFD/FEA-моделей для расчета течения расплава, температурных полей, усадок и остаточных напряжений."
+    },
+    {
+      "id": "http://example.org/competencies#Прогнозирование",
+      "label": "Прогнозирование",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Статистические и ML-методы, позволяющие предсказывать свойства отливок и устойчивость процессов на основе данных."
+    },
+    {
+      "id": "http://example.org/competencies#Обработка_результатов",
+      "label": "Обработка результатов",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Повторное использование методик анализа данных, сопоставление результатов разных партий и образцов."
+    },
+    {
+      "id": "http://example.org/competencies#Обработка_результатов_1",
+      "label": "Обработка результатов",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Повторное использование методик анализа данных, сопоставление результатов разных партий и образцов."
+    },
+    {
+      "id": "http://example.org/competencies#Экспертиза",
+      "label": "Экспертиза",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Оценка соответствия продукции ГОСТам и ТУ, выявление брака и формирование заключений для заказчиков."
+    },
+    {
+      "id": "http://example.org/competencies#Отливки",
+      "label": "Отливки",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Готовые литые заготовки, для которых критичны точность размеров, структура и механические характеристики."
+    },
+    {
+      "id": "http://example.org/competencies#Литейные_сплавы",
+      "label": "Литейные сплавы",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Подбор и модификация химического состава сплавов ради достижения заданных свойств литых деталей."
+    },
+    {
+      "id": "http://example.org/competencies#Плавка_и_заливка",
+      "label": "Плавка и заливка",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Управление плавильными агрегатами, доводка расплава и точное заполнение формы с соблюдением температурных режимов."
+    },
+    {
+      "id": "http://example.org/competencies#Формовочные_материалы",
+      "label": "Формовочные материалы",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Выбор и подготовка песчаных, керамических или связующих смесей для стабильных литейных форм."
+    },
+    {
+      "id": "http://example.org/competencies#Литьев_в_песчаные_формы",
+      "label": "Литьев в песчаные формы",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Технологии изготовления и повторного использования песчаных форм с контролем газопроницаемости и влажности."
+    },
+    {
+      "id": "http://example.org/competencies#Специальные_способы_литья",
+      "label": "Специальные способы литья",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Вакуумное, кокильное, индукционное и другие нетиповые процессы, требующие уникальных установок и параметров."
+    },
+    {
+      "id": "http://example.org/competencies#Проектирование_производства",
+      "label": "Проектирование производства",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Разработка технологических маршрутов, компоновка участков, расчет загрузки оборудования и логистики."
+    },
+    {
+      "id": "http://example.org/competencies#Литье_в_песчаные_формы",
+      "label": "Литье в песчаные формы",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Классические песчаные формы для единичных и крупногабаритных изделий, где важны гибкость и низкая стоимость."
+    },
+    {
+      "id": "http://example.org/competencies#Литье_по_выплавляемым_моделям",
+      "label": "Литье по выплавляемым моделям",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Высокоточное литье по восковым моделям и керамическим оболочкам, обеспечивающее тонкие стенки и чистую поверхность."
+    },
+    {
+      "id": "http://example.org/competencies#Литье_под_давлением",
+      "label": "Литье под давлением",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Высокоскоростное заполнение пресс-форм алюминиевыми и цинковыми сплавами ради высокой точности и гладкости."
+    },
+    {
+      "id": "http://example.org/competencies#Центробежное_литье",
+      "label": "Центробежное литье",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Формирование заготовок в вращающихся формах для получения плотной структуры и минимизации включений."
+    },
+    {
+      "id": "http://example.org/competencies#Другие_виды_литья",
+      "label": "Другие виды литья",
+      "type": "class",
+      "children": [],
+      "version": 0,
+      "author": "noname",
+      "description": "Прочие специализированные процессы (оболочковые, магнитные, аддитивные), закрывающие нишевые потребности."
+    }
+  ],
+  "links": [
+    {
+      "source": "http://example.org/root",
+      "target": "http://example.org/competencies#Компетенции",
+      "predicate": "http://example.org/competencies#a"
+    },
+    {
+      "source": "http://example.org/competencies#Компетенции",
+      "target": "http://example.org/competencies#Металлургия",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Металлургия",
+      "target": "http://example.org/competencies#Литейное_производство",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Литейное_производство",
+      "target": "http://example.org/competencies#Фундаментальные_исследовательские_компетенции",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Литейное_производство",
+      "target": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Литейное_производство",
+      "target": "http://example.org/competencies#Технологические_компетенции",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Литейное_производство",
+      "target": "http://example.org/competencies#Инструментальные",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Литейное_производство",
+      "target": "http://example.org/competencies#Производственные",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "target": "http://example.org/competencies#Теория_литейных_процессов",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "target": "http://example.org/competencies#Моделирование_и_расчеты",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "target": "http://example.org/competencies#Прогнозирование",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "target": "http://example.org/competencies#Обработка_результатов",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Прикладные_исследовательские_компетенции",
+      "target": "http://example.org/competencies#Экспертиза",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Отливки",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Литейные_сплавы",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Плавка_и_заливка",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Формовочные_материалы",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Литьев_в_песчаные_формы",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Специальные_способы_литья",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Проектирование_производства",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Технологические_компетенции",
+      "target": "http://example.org/competencies#Литье_в_песчаные_формы",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Производственные",
+      "target": "http://example.org/competencies#Литье_в_песчаные_формы",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Производственные",
+      "target": "http://example.org/competencies#Литье_по_выплавляемым_моделям",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Производственные",
+      "target": "http://example.org/competencies#Литье_под_давлением",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Производственные",
+      "target": "http://example.org/competencies#Центробежное_литье",
+      "predicate": "http://example.org/competencies#содержит"
+    },
+    {
+      "source": "http://example.org/competencies#Производственные",
+      "target": "http://example.org/competencies#Другие_виды_литья",
+      "predicate": "http://example.org/competencies#содержит"
+    }
+  ]
+}
