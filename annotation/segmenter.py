@@ -47,6 +47,9 @@ class TextSegmenter:
                 segments.extend(self._split_sentences(block))
 
         cleaned = [self._normalize_whitespace(seg) for seg in segments if seg.strip()]
+        # Дополнительная очистка: удаляем оставшиеся маркеры списков из начала сегментов
+        # Это важно, так как маркеры могут остаться после обработки
+        cleaned = [self._remove_leading_bullets(seg) for seg in cleaned if seg.strip()]
         return cleaned
 
     def _collect_table_segments(self, block: str) -> List[str]:
@@ -77,7 +80,8 @@ class TextSegmenter:
 
     @staticmethod
     def _is_list_like_line(line: str) -> bool:
-        return bool(re.match(r"^[-•\d]+[.)]?\s+", line))
+        # Включаем "o" (строчная буква o) и "·" (middle dot) - часто используются для списков второго уровня
+        return bool(re.match(r"^[-•\do·\u00B7]+[.)]?\s+", line))
 
     @staticmethod
     def _has_many_separators(line: str) -> bool:
@@ -87,6 +91,30 @@ class TextSegmenter:
     @staticmethod
     def _normalize_whitespace(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip()
+    
+    @staticmethod
+    def _remove_leading_bullets(text: str) -> str:
+        """
+        Удаляет маркеры списков из начала текста.
+        Это важно для очистки сегментов от оставшихся маркеров.
+        """
+        # Удаляем маркеры в начале строки (включая "o", "·" и "-")
+        # Паттерн: маркер + пробел(ы) в начале строки
+        text = re.sub(r'^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+', '', text)
+        # Также удаляем маркеры после пробелов в начале
+        text = re.sub(r'^\s+[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+', '', text)
+        # Удаляем "o " в начале строки (отдельный маркер списка)
+        # Это важно, так как "o" может остаться после нормализации
+        if text.startswith('o '):
+            text = text[2:]  # Удаляем "o " из начала
+        # Также удаляем "o" после пробелов в начале
+        text = re.sub(r'^(\s+)o\s+', r'\1', text)
+        # Удаляем "· " в начале строки (middle dot)
+        if text.startswith('· ') or text.startswith('\u00B7 '):
+            text = text[2:]  # Удаляем "· " из начала
+        # Также удаляем "·" после пробелов в начале
+        text = re.sub(r'^(\s+)[·\u00B7]\s+', r'\1', text)
+        return text.strip()
 
     def _split_sentences(self, text: str) -> List[str]:
         # Обычная обработка через razdel
@@ -148,14 +176,15 @@ class TextSegmenter:
     def _is_bulleted_block(self, block: str) -> bool:
         """
         Определяет, является ли блок маркированным списком.
-        Проверяет наличие маркеров списка (•, -, ◦, ▪) в начале строк.
+        Проверяет наличие маркеров списка (•, -, ◦, ▪, o, ·) в начале строк.
         """
         lines = block.splitlines()
         if len(lines) < 2:
             return False
         
         # Паттерн для маркеров списка в начале строки
-        bullet_pattern = re.compile(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CF]\s+")
+        # Включаем "o" (строчная буква o) и "·" (middle dot) - часто используются для списков второго уровня
+        bullet_pattern = re.compile(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+")
         bullet_count = sum(1 for line in lines if bullet_pattern.match(line.strip()))
         
         # Если хотя бы 2 строки начинаются с маркера, считаем это списком
@@ -239,15 +268,41 @@ class TextSegmenter:
                         sub_chunk = self._normalize_whitespace(sub_chunk)
                         segments.append(sub_chunk)
             else:
-                # Если только один элемент, обрабатываем как обычно
-                segments.extend(self._process_chunk(chunk))
-
+                # Если только один элемент, проверяем, есть ли текст после него
+                # Если чанк содержит несколько строк, и вторая строка не начинается с номера,
+                # то это продолжение пункта - объединяем их в один сегмент
+                lines_in_chunk = chunk.splitlines()
+                if len(lines_in_chunk) > 1:
+                    # Первая строка - нумерованный пункт
+                    first_line = lines_in_chunk[0].strip()
+                    if first_line:
+                        # Проверяем, является ли вторая строка продолжением пункта
+                        second_line = lines_in_chunk[1].strip()
+                        is_continuation = (
+                            second_line and 
+                            not re.match(r"^\d+[\.\)]\s+", second_line) and
+                            not re.match(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+", second_line)
+                        )
+                        
+                        if is_continuation:
+                            # Это продолжение пункта - объединяем все строки в один сегмент
+                            # Объединяем строки через пробел, чтобы получилось одно предложение
+                            combined = ' '.join(line.strip() for line in lines_in_chunk if line.strip())
+                            combined = self._normalize_whitespace(combined)
+                            segments.append(combined)
+                        else:
+                            # Это не продолжение - обрабатываем как обычно
+                            segments.extend(self._process_chunk(chunk))
+                else:
+                    # Одна строка - обрабатываем как обычно
+                    segments.extend(self._process_chunk(chunk))
+        
         return segments
 
     def _segment_bulleted_block(self, block: str) -> List[str]:
         """
         Разделяет маркированный список на отдельные сегменты.
-        Обрабатывает маркеры: •, -, ◦, ▪ и их комбинации.
+        Обрабатывает маркеры: •, -, ◦, ▪, o, · и их комбинации.
         Маркеры могут быть в начале строк или в середине текста (после запятых, двоеточий и т.д.).
         """
         segments: List[str] = []
@@ -261,13 +316,15 @@ class TextSegmenter:
         for line in lines:
             line_stripped = line.strip()
             # Проверяем, начинается ли строка с маркера
-            match = re.match(r"^([•\-\u2022\u2023\u25E6\u25AA\u25CF])\s+", line_stripped)
+            # Включаем "o" (строчная буква o) и "·" (middle dot) - часто используются для списков второго уровня
+            match = re.match(r"^([•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7])\s+", line_stripped)
             if match:
                 all_positions.append(current_pos)
             current_pos += len(line) + 1  # +1 для символа новой строки
         
         # Обрабатываем маркеры после разделителей в середине текста
-        pattern_after_separator = re.compile(r"([,;:])\s+([•\-\u2022\u2023\u25E6\u25AA\u25CF])\s+")
+        # Включаем "o" и "·" в паттерн
+        pattern_after_separator = re.compile(r"([,;:])\s+([•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7])\s+")
         for match in pattern_after_separator.finditer(block):
             # Позиция маркера после разделителя
             marker_pos = match.end() - len(match.group(2)) - 1
@@ -294,12 +351,40 @@ class TextSegmenter:
             if not chunk:
                 continue
             
-            # Убираем маркер из начала, если он есть
-            chunk = re.sub(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CF]\s+", "", chunk)
+            # Убираем маркер из начала, если он есть (включая "o" и "·")
+            chunk = re.sub(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+", "", chunk)
             # Также убираем разделители в начале (запятая, точка с запятой, двоеточие, пробелы)
             chunk = re.sub(r"^[\s,;:]+", "", chunk)
-            if chunk:
-                # Обрабатываем чанк (может содержать таблицы или другие структуры)
+            if not chunk:
+                continue
+            
+            # Проверяем, есть ли в чанке текст после элемента списка (например, после точки или точки с запятой)
+            # Если есть перевод строки и текст после него не начинается с маркера или номера, разделяем
+            lines_in_chunk = chunk.splitlines()
+            if len(lines_in_chunk) > 1:
+                # Первая строка - элемент списка
+                first_line = lines_in_chunk[0].strip()
+                if first_line:
+                    segments.extend(self._process_chunk(first_line))
+                
+                # Остальные строки - текст после списка
+                remaining_text = '\n'.join(lines_in_chunk[1:]).strip()
+                if remaining_text:
+                    # Проверяем, не является ли это продолжением списка (начинается с маркера или номера)
+                    first_remaining_line = lines_in_chunk[1].strip()
+                    is_list_continuation = (
+                        re.match(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+", first_remaining_line) or
+                        re.match(r"^\d+[\.\)]\s+", first_remaining_line)
+                    )
+                    
+                    if not is_list_continuation:
+                        # Это не продолжение списка - обрабатываем как обычный текст
+                        segments.extend(self._split_sentences(remaining_text))
+                    else:
+                        # Это продолжение списка - обрабатываем весь чанк вместе
+                        segments.extend(self._process_chunk(chunk))
+            else:
+                # Одна строка - обрабатываем как обычно
                 segments.extend(self._process_chunk(chunk))
         
         return segments
@@ -313,8 +398,8 @@ class TextSegmenter:
         
         # Находим все маркеры (нумерованные и маркированные)
         numbered_pattern = re.compile(r"(?<!\S)(\d+(?:\.\d+)*[\.\)])\s+|(?<!\S)(\d+(?:\.\d+)+)\s+")
-        bulleted_pattern = re.compile(r"^([•\-\u2022\u2023\u25E6\u25AA\u25CF])\s+", re.MULTILINE)
-        bulleted_pattern_separator = re.compile(r"([,;:])\s+([•\-\u2022\u2023\u25E6\u25AA\u25CF])\s+")
+        bulleted_pattern = re.compile(r"^([•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7])\s+", re.MULTILINE)
+        bulleted_pattern_separator = re.compile(r"([,;:])\s+([•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7])\s+")
         
         numbered_matches = list(numbered_pattern.finditer(block))
         bulleted_matches_start = list(bulleted_pattern.finditer(block))
@@ -352,8 +437,8 @@ class TextSegmenter:
             if not chunk:
                 continue
             
-            # Убираем маркер из начала
-            chunk = re.sub(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CF]\s+", "", chunk)
+            # Убираем маркер из начала (включая "o" и "·")
+            chunk = re.sub(r"^[•\-\u2022\u2023\u25E6\u25AA\u25CFo·\u00B7]\s+", "", chunk)
             chunk = re.sub(r"^[\s,;:]+", "", chunk)
             if chunk:
                 segments.extend(self._process_chunk(chunk))
