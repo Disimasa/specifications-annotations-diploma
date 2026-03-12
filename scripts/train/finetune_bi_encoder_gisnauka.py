@@ -4,7 +4,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Sequence, Tuple
 
 import torch
 from sentence_transformers import InputExample, SentenceTransformer, losses
@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 
 TRAIN_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train.csv"
 TRAIN_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_filtered.csv"
+TRAIN_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16.csv"
 TEST_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
 ONTOLOGY_PATH = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 OUTPUT_DIR = PROJECT_DIR / "models" / "bi-encoder-gisnauka"
@@ -272,7 +273,7 @@ def build_train_pairs_from_docs(
 def build_train_pairs_from_segments(
     docs: List[Tuple[str, str, List[str]]],
     code_to_text: Dict[str, str],
-) -> List[InputExample]:
+) -> Tuple[List[InputExample], List[Tuple[str, int, str, str]]]:
     """
     Строит обучающие пары (segment_text, code_text) из предварительно
     сегментированного CSV, используя только те doc_id, которые попали в train_docs.
@@ -290,6 +291,7 @@ def build_train_pairs_from_segments(
 
     train_doc_ids = {doc_id for doc_id, _text, _codes in docs}
     examples: List[InputExample] = []
+    meta: List[Tuple[str, int, str, str]] = []
 
     with TRAIN_SEGMENTS_CSV.open(encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -300,6 +302,11 @@ def build_train_pairs_from_segments(
             segment_text = (row.get("segment_text") or "").strip()
             if not segment_text:
                 continue
+            segment_index_raw = (row.get("segment_index") or "").strip()
+            try:
+                segment_index = int(segment_index_raw)
+            except ValueError:
+                segment_index = 0
             codes_raw = (row.get("grnti_codes") or "").strip()
             if not codes_raw:
                 continue
@@ -312,7 +319,111 @@ def build_train_pairs_from_segments(
                 if not comp_text:
                     continue
                 examples.append(InputExample(texts=[segment_text, comp_text]))
+                top_section = code.split(".")[0] if "." in code else code[:2]
+                meta.append((doc_id, segment_index, code, top_section))
+    return examples, meta
+
+
+def load_train_examples_from_pairs(
+    code_to_text: Dict[str, str],
+) -> List[InputExample]:
+    import csv
+    import sys
+
+    if not TRAIN_PAIRS_CSV.exists():
+        raise FileNotFoundError(f"balanced pairs CSV not found: {TRAIN_PAIRS_CSV}")
+
+    try:
+        csv.field_size_limit(sys.maxsize)
+    except (OverflowError, ValueError):
+        csv.field_size_limit(10_000_000)
+
+    examples: List[InputExample] = []
+    with TRAIN_PAIRS_CSV.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            segment_text = (row.get("segment_text") or "").strip()
+            if not segment_text:
+                continue
+            code = (row.get("leaf_code") or "").strip()
+            if not code or not _is_leaf_grnti_code(code):
+                continue
+            comp_text = code_to_text.get(code)
+            if not comp_text:
+                continue
+            examples.append(InputExample(texts=[segment_text, comp_text]))
     return examples
+
+
+class SmartBatchSampler:
+    def __init__(
+        self,
+        meta: List[Tuple[str, int, str, str]],
+        batch_size: int,
+        *,
+        seed: int = 42,
+    ) -> None:
+        self.meta = meta
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+
+    def __iter__(self) -> Iterator[List[int]]:
+        import random
+
+        n = len(self.meta)
+        indices = list(range(n))
+        rnd = random.Random(self.seed)
+        rnd.shuffle(indices)
+
+        remaining = list(indices)
+        while remaining:
+            batch: List[int] = []
+            used_segments: set[Tuple[str, int]] = set()
+            used_codes: set[str] = set()
+            used_top: set[str] = set()
+            while remaining and len(batch) < self.batch_size:
+                chosen: int | None = None
+
+                for idx in remaining:
+                    doc_id, seg_idx, code, top_section = self.meta[idx]
+                    seg_key = (doc_id, seg_idx)
+                    if seg_key in used_segments:
+                        continue
+                    if code in used_codes:
+                        continue
+                    if top_section in used_top:
+                        continue
+                    chosen = idx
+                    break
+
+                if chosen is None:
+                    for idx in remaining:
+                        doc_id, seg_idx, code, _top = self.meta[idx]
+                        seg_key = (doc_id, seg_idx)
+                        if seg_key in used_segments:
+                            continue
+                        if code in used_codes:
+                            continue
+                        chosen = idx
+                        break
+
+                if chosen is None:
+                    chosen = rnd.choice(remaining)
+
+                remaining.remove(chosen)
+                doc_id, seg_idx, code, top_section = self.meta[chosen]
+                seg_key = (doc_id, seg_idx)
+                batch.append(chosen)
+                used_segments.add(seg_key)
+                used_codes.add(code)
+                used_top.add(top_section)
+
+            yield batch
+
+    def __len__(self) -> int:
+        if self.batch_size <= 0:
+            return 0
+        return (len(self.meta) + self.batch_size - 1) // self.batch_size
 
 
 def evaluate_encoder_on_docs(
@@ -365,7 +476,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--max-train-docs", type=int, default=50)
     parser.add_argument("--valid-docs", type=int, default=10)
     parser.add_argument("--early-stop-patience", type=int, default=1)
@@ -387,18 +498,18 @@ def main() -> None:
     if not docs_all:
         raise RuntimeError("no train docs loaded")
     train_docs, valid_docs = _split_train_valid_docs(docs_all, valid_docs=int(args.valid_docs))
-    train_examples = build_train_pairs_from_segments(train_docs, code_to_text)
+    train_examples = load_train_examples_from_pairs(code_to_text)
     if not train_examples:
         raise RuntimeError("no training pairs built")
 
-    print(f"Train docs: {len(train_docs)}")
+    print(f"Train docs (для валидации): {len(train_docs)}")
     print(f"Valid docs: {len(valid_docs)}")
-    print(f"Train pairs: {len(train_examples)}")
+    print(f"Train pairs (из сбалансированного файла): {len(train_examples)}")
 
     train_dataloader = DataLoader(
         train_examples,
-        shuffle=True,
         batch_size=args.batch_size,
+        shuffle=False,
     )
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
