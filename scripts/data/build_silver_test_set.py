@@ -1,13 +1,18 @@
 from __future__ import annotations 
 
 import json 
+import sys 
 from pathlib import Path 
 from typing import Dict ,List 
+
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
+SRC_DIR =PROJECT_DIR /"src"
+if str (SRC_DIR )not in sys .path :
+    sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .annotator import annotate_document 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
 TEXTS_DIR =PROJECT_DIR /"data"/"specifications"/"texts"
 ONTOLOGY_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 EMB_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings.npz"

@@ -39,11 +39,12 @@ from typing import Dict ,Iterable ,List ,Optional ,Sequence ,Tuple
 
 
 def _resolve_project_dir ()->Path :
-    return Path (__file__ ).resolve ().parents [1 ]
+    return Path (__file__ ).resolve ().parents [2 ]
 
 
 PROJECT_DIR =_resolve_project_dir ()
-sys .path .insert (0 ,str (PROJECT_DIR ))
+SRC_DIR =PROJECT_DIR /"src"
+sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator 
 

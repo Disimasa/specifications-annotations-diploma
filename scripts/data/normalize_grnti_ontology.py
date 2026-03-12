@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict ,List ,Optional 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 INPUT_PATH =PROJECT_DIR /"data"/"ontology_grnti.json"
 OUTPUT_PATH =PROJECT_DIR /"data"/"ontology_grnti_clean.json"
 

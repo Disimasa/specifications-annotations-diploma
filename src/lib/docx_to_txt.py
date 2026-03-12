@@ -24,7 +24,7 @@ def _load_license ()->None :
 
     try :
 
-        license_path =Path (__file__ ).parent .parent /"keys"/"Aspose.WordsforPythonvia.NET.lic"
+        license_path =Path (__file__ ).resolve ().parents [2 ]/"keys"/"Aspose.WordsforPythonvia.NET.lic"
 
         if license_path .exists ():
             license =aw .License ()

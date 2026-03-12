@@ -5,7 +5,7 @@ from annotation .segmenter import TextSegmenter
 
 
 def main ()->None :
-    base_dir =Path (__file__ ).parent .parent 
+    base_dir =Path (__file__ ).resolve ().parents [2 ]
     texts_dir =base_dir /"data"/"specifications"/"texts"
     jsons_dir =base_dir /"data"/"segmentations"/"reference"
 

@@ -12,9 +12,10 @@ import requests
 from dotenv import load_dotenv 
 from tqdm import tqdm 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 import sys 
-sys .path .insert (0 ,str (PROJECT_DIR ))
+SRC_DIR =PROJECT_DIR /"src"
+sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .segmenter import TextSegmenter 
 from annotation .segment_filter import SegmentFilter 

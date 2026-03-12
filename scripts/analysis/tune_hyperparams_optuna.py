@@ -11,9 +11,10 @@ import optuna
 from optuna import logging as optuna_logging 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
-if str (PROJECT_DIR )not in sys .path :
-    sys .path .insert (0 ,str (PROJECT_DIR ))
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
+SRC_DIR =PROJECT_DIR /"src"
+if str (SRC_DIR )not in sys .path :
+    sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .annotator import (
 DEFAULT_CROSS_ENCODER_MODEL ,

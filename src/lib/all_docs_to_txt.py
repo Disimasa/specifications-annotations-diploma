@@ -3,7 +3,7 @@ from lib .docx_to_txt import convert_docs_to_txt
 
 
 def main ():
-    base_dir =Path (__file__ ).parent .parent 
+    base_dir =Path (__file__ ).resolve ().parents [2 ]
     source_dir =base_dir /"data"/"specifications"/"docs"
     target_dir =base_dir /"data"/"specifications"/"texts"
 

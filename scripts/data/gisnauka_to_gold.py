@@ -9,7 +9,7 @@ from typing import Any ,Dict ,Iterable ,List ,Optional ,Sequence ,Tuple
 
 import requests 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 ONTOLOGY_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 OUT_PATH =PROJECT_DIR /"data"/"gold"/"gisnauka_samples.csv"
 

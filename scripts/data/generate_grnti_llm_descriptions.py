@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 INPUT_PATH =PROJECT_DIR /"data"/"ontology_grnti_clean.json"
 OUTPUT_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 

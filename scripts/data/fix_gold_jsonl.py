@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any ,Dict ,List ,Optional ,Tuple 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 DEFAULT_GOLD_PATH =PROJECT_DIR /"data"/"gold"/"test_set_manual_draft.jsonl"
 
 

@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 BASE_URL ="https://grnti.ru/"
-PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
+PROJECT_DIR =Path (__file__ ).resolve ().parents [2 ]
 OUTPUT_PATH =PROJECT_DIR /"data"/"ontology_grnti.json"
 
 

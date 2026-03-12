@@ -9,15 +9,16 @@ from typing import Any ,Dict ,List ,Optional
 import streamlit as st 
 
 
-PROJECT_DIR =Path (__file__ ).resolve ().parent .parent 
+PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
 DEFAULT_ONTOLOGY_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 DEFAULT_EMBEDDINGS_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings.npz"
 DEFAULT_TEXTS_DIR =PROJECT_DIR /"data"/"specifications"/"texts"
 
 
 
-if str (PROJECT_DIR )not in sys .path :
-    sys .path .insert (0 ,str (PROJECT_DIR ))
+SRC_DIR =PROJECT_DIR /"src"
+if str (SRC_DIR )not in sys .path :
+    sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator 
 

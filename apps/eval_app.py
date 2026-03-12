@@ -18,8 +18,9 @@ DEFAULT_EMBEDDINGS_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings.npz"
 DEFAULT_GOLD_JSONL_PATH =PROJECT_DIR /"data"/"gold"/"test_set_manual_draft.jsonl"
 DEFAULT_GOLD_CSV_PATH =PROJECT_DIR /"data"/"gold"/"gisnauka_samples.csv"
 
-if str (PROJECT_DIR )not in sys .path :
-    sys .path .insert (0 ,str (PROJECT_DIR ))
+SRC_DIR =PROJECT_DIR /"src"
+if str (SRC_DIR )not in sys .path :
+    sys .path .insert (0 ,str (SRC_DIR ))
 
 from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator 
 
