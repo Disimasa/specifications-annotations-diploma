@@ -115,7 +115,7 @@ def recall_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
     return sum(1 for p in pred_k if p in g) / float(len(g))
 
 
-def evaluate_on_test(model_path: Path) -> Dict[str, float]:
+def evaluate_on_test(model_ref: str) -> Dict[str, float]:
     import csv
     import sys
 
@@ -133,7 +133,12 @@ def evaluate_on_test(model_path: Path) -> Dict[str, float]:
         raise RuntimeError("no leaf codes found in ontology")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer(str(model_path), device=device)
+    candidate_path = Path(model_ref)
+    if candidate_path.exists():
+        model_name = str(candidate_path)
+    else:
+        model_name = model_ref
+    model = SentenceTransformer(model_name, device=device)
 
     code_texts = [code_to_text[c] for c in all_codes]
     with torch.inference_mode():
@@ -308,7 +313,7 @@ def main() -> None:
     parser.add_argument("--base-model", type=str, default=BASE_MODEL)
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--max-train-docs", type=int, default=50)
     parser.add_argument("--valid-docs", type=int, default=10)
@@ -390,8 +395,8 @@ def main() -> None:
     if best_dir.exists():
         print(f"Best checkpoint: {best_dir}")
 
-    original_metrics = evaluate_on_test(Path(args.base_model))
-    finetuned_metrics = evaluate_on_test(output_dir)
+    original_metrics = evaluate_on_test(args.base_model)
+    finetuned_metrics = evaluate_on_test(str(output_dir))
     print("Original encoder:")
     print(f"  R@20: {original_metrics.get('R@20', 0.0):.4f}")
     print(f"  P@20: {original_metrics.get('P@20', 0.0):.4f}")

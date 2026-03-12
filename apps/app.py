@@ -38,6 +38,29 @@ def _normalize_model_path (value :str )->str :
     return raw 
 
 
+def _default_embeddings_path_for_model (model_name :str )->Path :
+    name =Path (model_name ).name or str (model_name )
+    safe =name .replace (" ","_").replace ("\\","_").replace ("/","_")
+    return DEFAULT_EMBEDDINGS_PATH .with_name (f"ontology_grnti_embeddings_{safe}.npz")
+
+
+def _list_bi_encoder_options ()->List [str ]:
+    options :List [str ]=["deepvk/USER-bge-m3"]
+    models_dir =PROJECT_DIR /"models"
+    if models_dir .exists ():
+        for p in sorted (models_dir .iterdir ()):
+            if p .is_dir ():
+                options .append (str (p ))
+    seen :set [str ]=set ()
+    uniq :List [str ]=[]
+    for o in options :
+        if o in seen :
+            continue 
+        seen .add (o )
+        uniq .append (o )
+    return uniq 
+
+
 def _safe_read_uploaded_text (uploaded_file )->str :
     suffix =Path (uploaded_file .name ).suffix .lower ()
 
@@ -84,11 +107,13 @@ ontology_path :str ,
 bi_encoder_model :str ,
 cross_encoder_model :Optional [str ],
 )->EmbeddingAnnotator :
+    candidate =_default_embeddings_path_for_model (bi_encoder_model )
+    emb_path =candidate if candidate .exists ()else DEFAULT_EMBEDDINGS_PATH 
     return EmbeddingAnnotator (
     ontology_path =Path (ontology_path ),
     model_name =bi_encoder_model ,
     cross_encoder_model =_normalize_model_path (cross_encoder_model or "")if cross_encoder_model else None ,
-    precomputed_embeddings_path =DEFAULT_EMBEDDINGS_PATH ,
+    precomputed_embeddings_path =emb_path if emb_path .exists ()else None ,
     )
 
 
@@ -186,10 +211,12 @@ def main ()->None :
         st .divider ()
         st .header ("Модели")
 
-        bi_encoder_model =st .text_input (
+        bi_encoder_options =_list_bi_encoder_options ()
+        bi_encoder_model =st .selectbox (
         "Bi-encoder (SentenceTransformer)",
-        value ="deepvk/USER-bge-m3",
-        help ="Можно указать любую модель, совместимую с sentence-transformers.",
+        options =bi_encoder_options ,
+        index =0 ,
+        help ="Можно выбрать или указать любую модель, совместимую с sentence-transformers.",
         )
 
         default_cross_encoder_path =_normalize_model_path (DEFAULT_CROSS_ENCODER_MODEL )
