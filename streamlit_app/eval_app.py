@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import time
 
 import csv
 import sys as _sys
@@ -36,11 +37,13 @@ class GoldItem:
         gold_codes: Tuple[str, ...],
         text_path: Optional[Path] = None,
         text: Optional[str] = None,
+        top_code: Optional[str] = None,
     ) -> None:
         self.doc_id = doc_id
         self.gold_codes = gold_codes
         self.text_path = text_path
         self.text = text
+        self.top_code = top_code
 
 
 def _load_json(path: Path) -> dict:
@@ -118,7 +121,8 @@ def _read_gold_items(gold_path: Path) -> List[GoldItem]:
                 if not text:
                     continue
                 doc_id = row.get("doc_id") or f"gisnauka_{i}"
-                items.append(GoldItem(doc_id=str(doc_id), gold_codes=tuple(codes), text=text))
+                top_code = (row.get("top_code") or "").strip() or codes[0].split(".")[0]
+                items.append(GoldItem(doc_id=str(doc_id), gold_codes=tuple(codes), text=text, top_code=top_code))
         return items
 
     # JSONL по умолчанию
@@ -252,18 +256,22 @@ def evaluate(
     competency_id_to_code = _load_ontology_code_map(ontology_path)
     items = _read_gold_items(gold_path)
 
-    # Ограничиваем выборку: не более одного документа на каждый grandparent-код (XX)
-    if st.session_state.get("one_doc_per_grand", True):
-        seen_grand: set[str] = set()
-        reduced: List[GoldItem] = []
+    # Всегда используем ту же выборку, что и в Optuna (только для CSV):
+    # - группируем по top_code (XX)
+    # - для каждого top_code берём ПЕРВЫЙ документ
+    # Совпадает с логикой в tools/tune_hyperparams_optuna.py.
+    if gold_path.suffix.lower() == ".csv":
+        by_top: Dict[str, List[GoldItem]] = {}
         for it in items:
-            grands = {_to_level_code(c, 1) for c in it.gold_codes}
-            grands = {g for g in grands if g is not None}
-            if not grands:
+            top = (it.top_code or (it.gold_codes[0].split(".")[0] if it.gold_codes else "")).strip()
+            if not top:
                 continue
-            if any(g not in seen_grand for g in grands):
-                reduced.append(it)
-                seen_grand.update(grands)
+            by_top.setdefault(top, []).append(it)
+        reduced: List[GoldItem] = []
+        for top in sorted(by_top.keys()):
+            docs = by_top[top]
+            if docs:
+                reduced.append(docs[0])
         items = reduced
     precomputed = emb_path if emb_path and emb_path.exists() else None
 
@@ -493,12 +501,6 @@ def main() -> None:
         )
         st.session_state.filter_segments = st.checkbox("Фильтровать неинформативные сегменты", value=True, key="filt")
 
-        st.session_state.one_doc_per_grand = st.checkbox(
-            "Не более 1 документа на раздел (XX)",
-            value=True,
-            key="one_doc_per_grand_cb",
-        )
-
         st.header("Метрики")
         eval_ks_str = st.text_input("K для метрик (через запятую)", value="1,3,5,10,20")
         max_pred_codes = st.number_input(
@@ -550,6 +552,7 @@ def main() -> None:
     if not eval_ks:
         eval_ks = [1, 3, 5, 10, 20]
 
+    t0 = time.perf_counter()
     with st.spinner("Считаем метрики…"):
         summary = evaluate(
             gold_path=gold_path,
@@ -559,6 +562,10 @@ def main() -> None:
             eval_ks=tuple(sorted(set(eval_ks))),
             max_pred_codes=int(max_pred_codes),
         )
+    elapsed_s = time.perf_counter() - t0
+    mm = int(elapsed_s // 60)
+    ss = int(elapsed_s % 60)
+    st.caption(f"Время расчёта метрик: **{elapsed_s:.2f} сек** (≈ {mm:02d}:{ss:02d})")
 
     st.subheader("Листовой уровень (XX.YY.ZZ)")
     st.dataframe(_macro_to_table(summary["macro"], eval_ks), use_container_width=True)
