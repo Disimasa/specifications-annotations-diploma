@@ -6,7 +6,7 @@ from typing import Callable ,Dict ,List ,Optional
 
 import numpy as np 
 import torch 
-from sentence_transformers import CrossEncoder ,SentenceTransformer ,util 
+from sentence_transformers import CrossEncoder ,SentenceTransformer 
 
 from .ontology import Ontology 
 from .segment_filter import SegmentFilter 
@@ -44,6 +44,10 @@ class EmbeddingAnnotator :
             self ._competency_embeddings =self ._load_precomputed_embeddings (precomputed_embeddings_path )
         else :
             self ._competency_embeddings =self ._encode_competencies ()
+        self ._competency_ids :List [str ]=[c .id for c in self .ontology .competencies ]
+        self ._competency_by_id :Dict [str ,int ]={cid :i for i ,cid in enumerate (self ._competency_ids )}
+        self ._competency_matrix =self ._build_competency_matrix ()
+        self ._competency_matrix_device :Optional [torch .device ]=None
 
     def _encode_competencies (self )->Dict [str ,torch .Tensor ]:
         texts =[
@@ -76,6 +80,32 @@ class EmbeddingAnnotator :
             mapping [cid_str ]=embs_t [i ]
 
         return mapping 
+
+    def _build_competency_matrix (self )->torch .Tensor :
+        rows :List [torch .Tensor ]=[]
+        for comp in self .ontology .competencies :
+            emb =self ._competency_embeddings .get (comp .id )
+            if emb is None :
+                continue 
+            t =emb .detach ()
+            if t .dtype !=torch .float32 and t .dtype !=torch .float16 and t .dtype !=torch .bfloat16 :
+                t =t .to (dtype =torch .float32 )
+            rows .append (t )
+        if not rows :
+            return torch .empty ((0 ,0),dtype =torch .float32 )
+        mat =torch .stack (rows ,dim =0 )
+        if mat .dtype ==torch .float64 :
+            mat =mat .to (dtype =torch .float32 )
+        return mat 
+
+    def _ensure_competency_matrix_on (self ,device :torch .device )->torch .Tensor :
+        if self ._competency_matrix .numel ()==0 :
+            return self ._competency_matrix 
+        if self ._competency_matrix_device ==device :
+            return self ._competency_matrix 
+        self ._competency_matrix =self ._competency_matrix .to (device =device )
+        self ._competency_matrix_device =device 
+        return self ._competency_matrix 
 
     def _add_context_to_segments (self ,segments :List [str ],max_length :int )->List [str ]:
         segments_with_context =[]
@@ -226,66 +256,66 @@ class EmbeddingAnnotator :
         if progress_callback :
             progress_callback ("Вычисление эмбеддингов сегментов",0.0 )
 
-        segment_embeddings =self .model .encode (
-        segments_with_context ,
-        convert_to_tensor =True ,
-        normalize_embeddings =True ,
-        )
+        segment_embeddings =self .model .encode (segments_with_context ,convert_to_tensor =True ,normalize_embeddings =True )
         if progress_callback :
             progress_callback ("Вычисление эмбеддингов сегментов",1.0 )
 
 
         preliminary_annotations :List [dict ]=[]
-        total_comps =len (self .ontology .competencies )
-        for idx_comp ,comp in enumerate (self .ontology .competencies ):
-            if progress_callback and total_comps :
-                progress_callback ("Сопоставление сегментов с компетенциями (cosine similarity)",idx_comp /total_comps )
-            comp_embedding =self ._competency_embeddings .get (comp .id )
-            if comp_embedding is None :
-                continue 
-            cosine_scores =util .cos_sim (segment_embeddings ,comp_embedding )
-            if not cosine_scores .numel ():
-                continue 
-
-            scores =cosine_scores .squeeze (1 )
-            pairs =[(idx ,float (score .item ()))for idx ,score in enumerate (scores )]
-
-            pairs =[(i ,s )for i ,s in pairs if s >=threshold ]
-            if not pairs :
-                continue 
-            pairs .sort (key =lambda p :p [1 ],reverse =True )
-            top_pairs =pairs [:top_k ]if not (self .cross_encoder_model and rerank_top_k >0 )else pairs 
-
-            matches =[
-            {"segment_index":idx ,"score":score ,"segment":segments [idx ]}
-            for idx ,score in top_pairs 
-            ]
-
-            if matches :
-                scores_list =[m ["score"]for m in matches ]
-                segment_count =len (scores_list )
-                sum_score =sum (scores_list )
-                mean_score =sum_score /segment_count if segment_count >0 else 0.0 
-                aggregated_score =self ._aggregate_scores (scores_list ,confidence_aggregation )
-            else :
-                segment_count =0 
-                sum_score =0.0 
-                mean_score =0.0 
-                aggregated_score =0.0 
-
-            preliminary_annotations .append (
-            {
-            "competency_id":comp .id ,
-            "competency_label":comp .label ,
-            "competency_full_label":comp .full_label or comp .label ,
-            "doc_score":aggregated_score ,
-            "max_confidence":aggregated_score ,
-            "segment_count":segment_count ,
-            "sum_score":sum_score ,
-            "mean_score":mean_score ,
-            "matches":matches ,
-            }
-            )
+        if self ._competency_matrix .numel ()and segment_embeddings .numel ():
+            with torch .inference_mode ():
+                seg =segment_embeddings 
+                comp_mat =self ._ensure_competency_matrix_on (seg .device )
+                s =int (seg .shape [0 ])
+                c =int (comp_mat .shape [0 ])
+                if s and c :
+                    k_candidates =int (top_k )
+                    if self .cross_encoder_model and rerank_top_k >0 :
+                        k_candidates =max (k_candidates ,50 )
+                    k_candidates =min (k_candidates ,s )
+                    chunk_c =2000 
+                    for c0 in range (0 ,c ,chunk_c ):
+                        c1 =min (c ,c0 +chunk_c )
+                        if progress_callback and c :
+                            progress_callback ("Сопоставление сегментов с компетенциями (cosine similarity)",c0 /c )
+                        comp_chunk =comp_mat [c0 :c1 ]
+                        scores =seg @comp_chunk .T 
+                        if k_candidates <=0 :
+                            continue 
+                        topv ,topi =torch .topk (scores ,k =k_candidates ,dim =0 ,largest =True ,sorted =True )
+                        topv_cpu =topv .detach ().cpu ()
+                        topi_cpu =topi .detach ().cpu ()
+                        for j in range (c1 -c0 ):
+                            vals =topv_cpu [:,j ].tolist ()
+                            idxs =topi_cpu [:,j ].tolist ()
+                            pairs :List [tuple [int ,float ]]=[]
+                            for si ,sv in zip (idxs ,vals ):
+                                if float (sv )<threshold :
+                                    break 
+                                pairs .append ((int (si ),float (sv )))
+                            if not pairs :
+                                continue 
+                            comp =self .ontology .competencies [c0 +j ]
+                            top_pairs =pairs [:top_k ]if not (self .cross_encoder_model and rerank_top_k >0 )else pairs 
+                            matches =[{"segment_index":idx ,"score":score ,"segment":segments [idx ]}for idx ,score in top_pairs ]
+                            scores_list =[m ["score"]for m in matches ]
+                            segment_count =len (scores_list )
+                            sum_score =sum (scores_list )
+                            mean_score =sum_score /segment_count if segment_count >0 else 0.0 
+                            aggregated_score =self ._aggregate_scores (scores_list ,confidence_aggregation )
+                            preliminary_annotations .append (
+                            {
+                            "competency_id":comp .id ,
+                            "competency_label":comp .label ,
+                            "competency_full_label":comp .full_label or comp .label ,
+                            "doc_score":aggregated_score ,
+                            "max_confidence":aggregated_score ,
+                            "segment_count":segment_count ,
+                            "sum_score":sum_score ,
+                            "mean_score":mean_score ,
+                            "matches":matches ,
+                            }
+                            )
 
         if progress_callback :
             progress_callback ("Сопоставление сегментов с компетенциями (cosine similarity)",1.0 )

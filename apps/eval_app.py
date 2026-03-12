@@ -510,7 +510,7 @@ def main ()->None :
         use_ce_doc_score =st .checkbox (
         "Использовать cross-encoder для doc-score",
         value =False ,
-        key ="use_ce_doc_score_cb",
+        key ="use_ce_doc_score",
         )
 
         ce_model_default =DEFAULT_CROSS_ENCODER_MODEL 
