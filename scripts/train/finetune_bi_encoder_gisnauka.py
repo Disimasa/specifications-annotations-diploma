@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 TRAIN_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train.csv"
+TRAIN_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_filtered.csv"
 TEST_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
 ONTOLOGY_PATH = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 OUTPUT_DIR = PROJECT_DIR / "models" / "bi-encoder-gisnauka"
@@ -53,6 +54,10 @@ def load_ontology_texts(path: Path) -> Dict[str, str]:
 
 
 def load_train_examples() -> List[InputExample]:
+    """
+    Устаревшая функция (обучение по полным текстам), оставлена только на случай отладки.
+    Сейчас тренер использует предварительно сегментированный CSV.
+    """
     import csv
     import sys
 
@@ -264,6 +269,52 @@ def build_train_pairs_from_docs(
     return examples
 
 
+def build_train_pairs_from_segments(
+    docs: List[Tuple[str, str, List[str]]],
+    code_to_text: Dict[str, str],
+) -> List[InputExample]:
+    """
+    Строит обучающие пары (segment_text, code_text) из предварительно
+    сегментированного CSV, используя только те doc_id, которые попали в train_docs.
+    """
+    import csv
+    import sys
+
+    if not TRAIN_SEGMENTS_CSV.exists():
+        raise FileNotFoundError(f"segments CSV not found: {TRAIN_SEGMENTS_CSV}")
+
+    try:
+        csv.field_size_limit(sys.maxsize)
+    except (OverflowError, ValueError):
+        csv.field_size_limit(10_000_000)
+
+    train_doc_ids = {doc_id for doc_id, _text, _codes in docs}
+    examples: List[InputExample] = []
+
+    with TRAIN_SEGMENTS_CSV.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            doc_id = (row.get("doc_id") or "").strip()
+            if doc_id not in train_doc_ids:
+                continue
+            segment_text = (row.get("segment_text") or "").strip()
+            if not segment_text:
+                continue
+            codes_raw = (row.get("grnti_codes") or "").strip()
+            if not codes_raw:
+                continue
+            codes = [c.strip() for c in codes_raw.split(";") if c.strip()]
+            codes = [c for c in codes if _is_leaf_grnti_code(c)]
+            if not codes:
+                continue
+            for code in codes:
+                comp_text = code_to_text.get(code)
+                if not comp_text:
+                    continue
+                examples.append(InputExample(texts=[segment_text, comp_text]))
+    return examples
+
+
 def evaluate_encoder_on_docs(
     model: SentenceTransformer,
     docs: List[Tuple[str, str, List[str]]],
@@ -336,7 +387,7 @@ def main() -> None:
     if not docs_all:
         raise RuntimeError("no train docs loaded")
     train_docs, valid_docs = _split_train_valid_docs(docs_all, valid_docs=int(args.valid_docs))
-    train_examples = build_train_pairs_from_docs(train_docs, code_to_text)
+    train_examples = build_train_pairs_from_segments(train_docs, code_to_text)
     if not train_examples:
         raise RuntimeError("no training pairs built")
 
