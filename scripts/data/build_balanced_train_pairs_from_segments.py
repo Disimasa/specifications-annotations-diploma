@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 BALANCED_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_balanced.csv"
-OUTPUT_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16.csv"
+OUTPUT_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16_huge.csv"
 
 
 def is_leaf_grnti_code(code: str) -> bool:
@@ -94,14 +94,27 @@ def build_balanced_pairs(
             continue
         rnd.shuffle(codes)
 
-        k = min(k_global, len(codes))
-        chosen_codes = codes[:k]
-        for code in chosen_codes:
+        taken = 0
+        unique_target = min(k_global, len(codes))
+
+        for code in codes[:unique_target]:
             idx_list = code_map.get(code)
             if not idx_list:
                 continue
             idx = idx_list[0]
             selected.append(idx)
+            taken += 1
+
+        remaining = k_global - taken
+        while remaining > 0 and codes:
+            code = rnd.choice(codes)
+            idx_list = code_map.get(code)
+            if not idx_list:
+                remaining -= 1
+                continue
+            idx = idx_list[0]
+            selected.append(idx)
+            remaining -= 1
 
     return selected, uniq_counts
 

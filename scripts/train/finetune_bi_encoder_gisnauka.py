@@ -18,7 +18,7 @@ if str(SRC_DIR) not in sys.path:
 
 TRAIN_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train.csv"
 TRAIN_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_filtered.csv"
-TRAIN_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16.csv"
+TRAIN_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16_huge.csv"
 TEST_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
 ONTOLOGY_PATH = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 OUTPUT_DIR = PROJECT_DIR / "models" / "bi-encoder-gisnauka"
