@@ -1,0 +1,14 @@
+{
+  "value": 0.24682539682539678,
+  "params": {
+    "threshold": 0.55,
+    "top_k": 10,
+    "max_segment_length_for_context": 0,
+    "rerank_top_k": 0,
+    "confidence_aggregation": "sum",
+    "filter_segments": true,
+    "use_ce_doc_score": false,
+    "cross_encoder_model": "hf_dity"
+  },
+  "number": 0
+}

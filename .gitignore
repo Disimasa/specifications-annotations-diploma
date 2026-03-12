@@ -1,3 +1,5 @@
 .idea
 venv
 keys
+.env
+data/gold/test_set_manual_draft.jsonl

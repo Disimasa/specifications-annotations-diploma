@@ -1,0 +1,13 @@
+{
+  "value": 0.2597883597883597,
+  "params": {
+    "threshold": 0.4420264101429823,
+    "top_k": 19,
+    "max_segment_length_for_context": 460,
+    "rerank_top_k": 0,
+    "confidence_aggregation": "sum_log_count",
+    "filter_segments": true,
+    "use_ce_doc_score": true
+  },
+  "number": 1
+}

@@ -1,0 +1,2 @@
+epoch,steps,Accuracy,Accuracy_Threshold,F1,F1_Threshold,Precision,Recall,Average_Precision
+0.8824567596187787,5000,0.9999,0.9999938,0,0,0,0,0.0

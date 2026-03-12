@@ -11,6 +11,7 @@ class Competency:
     label: str
     parent: str | None
     description: str | None = None
+    full_label: str | None = None
 
 
 class Ontology:
@@ -65,6 +66,7 @@ class Ontology:
                             label=node["label"],
                             parent=self.parent_of(node_id),
                             description=node.get("description"),
+                            full_label=node.get("full_label"),
                         )
                     )
         else:
@@ -80,6 +82,7 @@ class Ontology:
                         label=node["label"],
                         parent=self.parent_of(node_id),
                         description=node.get("description"),
+                        full_label=node.get("full_label"),
                     )
                 )
 
