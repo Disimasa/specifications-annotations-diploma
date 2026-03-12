@@ -94,25 +94,31 @@ def build_balanced_pairs(
             continue
         rnd.shuffle(codes)
 
+        flat_indices: Dict[str, List[int]] = {c: list(idxs) for c, idxs in code_map.items()}
+
         taken = 0
         unique_target = min(k_global, len(codes))
 
-        for code in codes[:unique_target]:
-            idx_list = code_map.get(code)
+        for code in codes:
+            if taken >= unique_target:
+                break
+            idx_list = flat_indices.get(code) or []
             if not idx_list:
                 continue
-            idx = idx_list[0]
+            idx = idx_list.pop(0)
+            flat_indices[code] = idx_list
             selected.append(idx)
             taken += 1
 
         remaining = k_global - taken
-        while remaining > 0 and codes:
-            code = rnd.choice(codes)
-            idx_list = code_map.get(code)
-            if not idx_list:
-                remaining -= 1
-                continue
-            idx = idx_list[0]
+        while remaining > 0:
+            available_codes = [c for c in codes if flat_indices.get(c)]
+            if not available_codes:
+                break
+            code = rnd.choice(available_codes)
+            idx_list = flat_indices[code]
+            idx = idx_list.pop(0)
+            flat_indices[code] = idx_list
             selected.append(idx)
             remaining -= 1
 
