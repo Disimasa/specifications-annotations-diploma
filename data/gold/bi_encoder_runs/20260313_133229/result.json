@@ -1,0 +1,25 @@
+{
+  "original_metrics": {
+    "R@20": 0.3174603174603174,
+    "P@20": 0.05079365079365079
+  },
+  "finetuned_metrics": {
+    "R@20": 0.41269841269841273,
+    "P@20": 0.06746031746031746
+  },
+  "valid_best": {
+    "epoch": 2,
+    "R@20": 0.46620370370370373
+  },
+  "params": {
+    "base_model": "deepvk/USER-bge-m3",
+    "output_dir": "C:\\Projects\\university\\mag\\2_course\\1 sem\\diploma\\models\\bi-encoder-gisnauka",
+    "epochs": 2,
+    "batch_size": 32,
+    "learning_rate": 1e-06,
+    "max_train_docs": 5000,
+    "valid_docs": 600,
+    "early_stop_patience": 1,
+    "seed": 42
+  }
+}

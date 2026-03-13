@@ -15,8 +15,8 @@ from annotation.segmenter import TextSegmenter
 from annotation.segment_filter import SegmentFilter
 
 
-SRC_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train.csv"
-OUT_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train.csv"
+SRC_CSV_DEFAULT = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train_augmented_clean.csv"
+OUT_CSV_DEFAULT = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented.csv"
 
 
 def is_leaf_grnti_code(code: str) -> bool:
@@ -25,8 +25,18 @@ def is_leaf_grnti_code(code: str) -> bool:
 
 
 def main() -> None:
-    if not SRC_CSV.exists():
-        raise FileNotFoundError(f"Источник не найден: {SRC_CSV}")
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--src-csv", type=str, default=str(SRC_CSV_DEFAULT))
+    parser.add_argument("--out-csv", type=str, default=str(OUT_CSV_DEFAULT))
+    args = parser.parse_args()
+
+    src_csv = Path(str(args.src_csv))
+    out_csv = Path(str(args.out_csv))
+
+    if not src_csv.exists():
+        raise FileNotFoundError(f"Источник не найден: {src_csv}")
 
     try:
         csv.field_size_limit(sys.maxsize)
@@ -36,7 +46,7 @@ def main() -> None:
     segmenter = TextSegmenter()
     segment_filter = SegmentFilter()
 
-    with SRC_CSV.open(encoding="utf-8", newline="") as f_in:
+    with src_csv.open(encoding="utf-8", newline="") as f_in:
         reader = csv.DictReader(f_in)
         rows = list(reader)
         src_fields = reader.fieldnames or []
@@ -50,10 +60,10 @@ def main() -> None:
         "grnti_codes",
     ]
 
-    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
     written = 0
 
-    with OUT_CSV.open(encoding="utf-8", newline="", mode="w") as f_out:
+    with out_csv.open(encoding="utf-8", newline="", mode="w") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=out_fields)
         writer.writeheader()
 
@@ -81,8 +91,12 @@ def main() -> None:
             segments = [s.strip() for s in segments if s and s.strip()]
             if not segments:
                 continue
+            if len(segments) >= 14:
+                continue
 
             for idx, seg in enumerate(segments):
+                if len(seg) < 60 or len(seg) > 600:
+                    continue
                 writer.writerow(
                     {
                         "doc_id": doc_id,
@@ -95,7 +109,7 @@ def main() -> None:
                 )
                 written += 1
 
-    print(f"Сегментированный train сохранён в {OUT_CSV}, строк: {written}")
+    print(f"Сегментированный CSV сохранён в {out_csv}, строк: {written}")
 
 
 if __name__ == "__main__":

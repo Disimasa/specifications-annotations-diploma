@@ -8,8 +8,8 @@ from typing import Dict, List, Tuple
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-BALANCED_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_balanced.csv"
-OUTPUT_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16_huge.csv"
+BALANCED_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented.csv"
+OUTPUT_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16_augmented.csv"
 
 
 def is_leaf_grnti_code(code: str) -> bool:

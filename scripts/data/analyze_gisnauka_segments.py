@@ -8,7 +8,7 @@ from typing import Dict, List
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train.csv"
+SEGMENTS_CSV_DEFAULT = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented.csv"
 
 
 def _stats(arr: List[float]) -> Dict[str, float]:
@@ -33,8 +33,20 @@ def _stats(arr: List[float]) -> Dict[str, float]:
 
 
 def main() -> None:
-    if not SEGMENTS_CSV.exists():
-        raise FileNotFoundError(f"Не найден файл сегментов: {SEGMENTS_CSV}")
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--segments-csv",
+        type=str,
+        default=str(SEGMENTS_CSV_DEFAULT),
+    )
+    args = parser.parse_args()
+
+    segments_csv = Path(str(args.segments_csv))
+
+    if not segments_csv.exists():
+        raise FileNotFoundError(f"Не найден файл сегментов: {segments_csv}")
 
     try:
         csv.field_size_limit(sys.maxsize)
@@ -45,7 +57,7 @@ def main() -> None:
     word_counts: List[int] = []
     by_doc: Dict[str, int] = {}
 
-    with SEGMENTS_CSV.open(encoding="utf-8", newline="") as f:
+    with segments_csv.open(encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             doc_id = (row.get("doc_id") or "").strip()

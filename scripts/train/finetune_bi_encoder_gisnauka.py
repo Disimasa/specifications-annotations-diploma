@@ -4,11 +4,10 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import torch
 from sentence_transformers import InputExample, SentenceTransformer, losses
-from torch.utils.data import DataLoader
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -16,9 +15,9 @@ SRC_DIR = PROJECT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-TRAIN_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train.csv"
-TRAIN_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_filtered.csv"
-TRAIN_PAIRS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_train_pairs_balanced_bs16_huge.csv"
+TRAIN_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_train_augmented_clean.csv"
+TRAIN_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented.csv"
+VALID_SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_valid_augmented.csv"
 TEST_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
 ONTOLOGY_PATH = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 OUTPUT_DIR = PROJECT_DIR / "models" / "bi-encoder-gisnauka"
@@ -271,12 +270,11 @@ def build_train_pairs_from_docs(
 
 
 def build_train_pairs_from_segments(
-    docs: List[Tuple[str, str, List[str]]],
     code_to_text: Dict[str, str],
-) -> Tuple[List[InputExample], List[Tuple[str, int, str, str]]]:
+) -> Tuple[List[InputExample], List[str]]:
     """
     Строит обучающие пары (segment_text, code_text) из предварительно
-    сегментированного CSV, используя только те doc_id, которые попали в train_docs.
+    сегментированного CSV для всех doc_id в TRAIN_SEGMENTS_CSV.
     """
     import csv
     import sys
@@ -289,24 +287,16 @@ def build_train_pairs_from_segments(
     except (OverflowError, ValueError):
         csv.field_size_limit(10_000_000)
 
-    train_doc_ids = {doc_id for doc_id, _text, _codes in docs}
     examples: List[InputExample] = []
-    meta: List[Tuple[str, int, str, str]] = []
+    example_doc_ids: List[str] = []
 
     with TRAIN_SEGMENTS_CSV.open(encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            doc_id = (row.get("doc_id") or "").strip()
-            if doc_id not in train_doc_ids:
-                continue
+        for i, row in enumerate(reader):
+            doc_id = (row.get("doc_id") or "").strip() or f"train_{i}"
             segment_text = (row.get("segment_text") or "").strip()
             if not segment_text:
                 continue
-            segment_index_raw = (row.get("segment_index") or "").strip()
-            try:
-                segment_index = int(segment_index_raw)
-            except ValueError:
-                segment_index = 0
             codes_raw = (row.get("grnti_codes") or "").strip()
             if not codes_raw:
                 continue
@@ -319,111 +309,8 @@ def build_train_pairs_from_segments(
                 if not comp_text:
                     continue
                 examples.append(InputExample(texts=[segment_text, comp_text]))
-                top_section = code.split(".")[0] if "." in code else code[:2]
-                meta.append((doc_id, segment_index, code, top_section))
-    return examples, meta
-
-
-def load_train_examples_from_pairs(
-    code_to_text: Dict[str, str],
-) -> List[InputExample]:
-    import csv
-    import sys
-
-    if not TRAIN_PAIRS_CSV.exists():
-        raise FileNotFoundError(f"balanced pairs CSV not found: {TRAIN_PAIRS_CSV}")
-
-    try:
-        csv.field_size_limit(sys.maxsize)
-    except (OverflowError, ValueError):
-        csv.field_size_limit(10_000_000)
-
-    examples: List[InputExample] = []
-    with TRAIN_PAIRS_CSV.open(encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            segment_text = (row.get("segment_text") or "").strip()
-            if not segment_text:
-                continue
-            code = (row.get("leaf_code") or "").strip()
-            if not code or not _is_leaf_grnti_code(code):
-                continue
-            comp_text = code_to_text.get(code)
-            if not comp_text:
-                continue
-            examples.append(InputExample(texts=[segment_text, comp_text]))
-    return examples
-
-
-class SmartBatchSampler:
-    def __init__(
-        self,
-        meta: List[Tuple[str, int, str, str]],
-        batch_size: int,
-        *,
-        seed: int = 42,
-    ) -> None:
-        self.meta = meta
-        self.batch_size = int(batch_size)
-        self.seed = int(seed)
-
-    def __iter__(self) -> Iterator[List[int]]:
-        import random
-
-        n = len(self.meta)
-        indices = list(range(n))
-        rnd = random.Random(self.seed)
-        rnd.shuffle(indices)
-
-        remaining = list(indices)
-        while remaining:
-            batch: List[int] = []
-            used_segments: set[Tuple[str, int]] = set()
-            used_codes: set[str] = set()
-            used_top: set[str] = set()
-            while remaining and len(batch) < self.batch_size:
-                chosen: int | None = None
-
-                for idx in remaining:
-                    doc_id, seg_idx, code, top_section = self.meta[idx]
-                    seg_key = (doc_id, seg_idx)
-                    if seg_key in used_segments:
-                        continue
-                    if code in used_codes:
-                        continue
-                    if top_section in used_top:
-                        continue
-                    chosen = idx
-                    break
-
-                if chosen is None:
-                    for idx in remaining:
-                        doc_id, seg_idx, code, _top = self.meta[idx]
-                        seg_key = (doc_id, seg_idx)
-                        if seg_key in used_segments:
-                            continue
-                        if code in used_codes:
-                            continue
-                        chosen = idx
-                        break
-
-                if chosen is None:
-                    chosen = rnd.choice(remaining)
-
-                remaining.remove(chosen)
-                doc_id, seg_idx, code, top_section = self.meta[chosen]
-                seg_key = (doc_id, seg_idx)
-                batch.append(chosen)
-                used_segments.add(seg_key)
-                used_codes.add(code)
-                used_top.add(top_section)
-
-            yield batch
-
-    def __len__(self) -> int:
-        if self.batch_size <= 0:
-            return 0
-        return (len(self.meta) + self.batch_size - 1) // self.batch_size
+                example_doc_ids.append(doc_id)
+    return examples, example_doc_ids
 
 
 def evaluate_encoder_on_docs(
@@ -468,6 +355,157 @@ def evaluate_encoder_on_docs(
     return {"R@20": macro_r20, "P@20": macro_p20}
 
 
+def evaluate_encoder_on_segmented_csv(
+    model: SentenceTransformer,
+    segments_csv: Path,
+    code_to_text: Dict[str, str],
+    *,
+    k: int = 20,
+    segment_batch_size: int = 64,
+) -> Dict[str, float]:
+    import csv
+    import sys
+
+    if not segments_csv.exists():
+        raise FileNotFoundError(f"segments CSV not found: {segments_csv}")
+
+    try:
+        csv.field_size_limit(sys.maxsize)
+    except (OverflowError, ValueError):
+        csv.field_size_limit(10_000_000)
+
+    all_codes: List[str] = [c for c in code_to_text.keys() if _is_leaf_grnti_code(c)]
+    if not all_codes:
+        return {"R@20": 0.0, "P@20": 0.0}
+
+    code_texts = [code_to_text[c] for c in all_codes]
+    with torch.inference_mode():
+        code_embs = model.encode(
+            code_texts,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+            batch_size=64,
+        )
+
+    docs_segments: Dict[str, List[str]] = {}
+    docs_gold: Dict[str, List[str]] = {}
+
+    with segments_csv.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader):
+            doc_id = (row.get("doc_id") or "").strip() or f"valid_{i}"
+            seg = (row.get("segment_text") or "").strip()
+            if not seg:
+                continue
+            codes_raw = (row.get("grnti_codes") or "").strip()
+            if not codes_raw:
+                continue
+            gold_codes = [c.strip() for c in codes_raw.split(";") if c.strip()]
+            gold_codes = [c for c in gold_codes if _is_leaf_grnti_code(c)]
+            gold_codes = [c for c in gold_codes if c in code_to_text]
+            gold_codes = sorted(set(gold_codes))
+            if not gold_codes:
+                continue
+            docs_segments.setdefault(doc_id, []).append(seg)
+            if doc_id not in docs_gold:
+                docs_gold[doc_id] = gold_codes
+
+    recalls: List[float] = []
+    precisions: List[float] = []
+
+    for doc_id, segments in docs_segments.items():
+        gold_codes = docs_gold.get(doc_id, [])
+        if not gold_codes:
+            continue
+        with torch.inference_mode():
+            seg_embs = model.encode(
+                segments,
+                convert_to_tensor=True,
+                normalize_embeddings=True,
+                batch_size=int(segment_batch_size),
+            )
+            scores = torch.matmul(seg_embs, code_embs.T)
+            doc_scores = scores.max(dim=0).values
+            topk_idx = torch.topk(doc_scores, k=min(int(k), int(doc_scores.shape[0]))).indices
+        pred_codes = [all_codes[int(i)] for i in topk_idx.tolist()]
+        recalls.append(recall_at_k(pred_codes, gold_codes, int(k)))
+        precisions.append(precision_at_k(pred_codes, gold_codes, int(k)))
+
+    macro_r20 = sum(recalls) / float(len(recalls)) if recalls else 0.0
+    macro_p20 = sum(precisions) / float(len(precisions)) if precisions else 0.0
+    return {"R@20": macro_r20, "P@20": macro_p20}
+
+
+class UniquePairsBatchSampler(torch.utils.data.Sampler[List[int]]):
+    """
+    Батчер по индексам `InputExample`, который гарантирует, что
+    в рамках одного батча не повторяются:
+    - тексты сегментов (texts[0])
+    - тексты специализаций (texts[1])
+    """
+
+    def __init__(
+        self,
+        data: Sequence[InputExample],
+        doc_ids: Sequence[str],
+        batch_size: int,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self.data = data
+        self.doc_ids = doc_ids
+        self.batch_size = int(batch_size)
+        self.generator = generator
+
+    def __iter__(self):
+        n = len(self.data)
+        if n == 0:
+            return
+
+        if self.generator is None:
+            indices = torch.randperm(n).tolist()
+        else:
+            indices = torch.randperm(n, generator=self.generator).tolist()
+
+        i = 0
+        while i < n:
+            used_segments = set()
+            used_codes = set()
+            used_docs = set()
+            batch: List[int] = []
+
+            while i < n and len(batch) < self.batch_size:
+                idx = indices[i]
+                i += 1
+                ex = self.data[idx]
+                doc_id = self.doc_ids[idx] if idx < len(self.doc_ids) else None
+                if not ex.texts or len(ex.texts) < 2:
+                    continue
+                seg_text = ex.texts[0]
+                code_text = ex.texts[1]
+                if (
+                    seg_text in used_segments
+                    or code_text in used_codes
+                    or (doc_id is not None and doc_id in used_docs)
+                ):
+                    continue
+                used_segments.add(seg_text)
+                used_codes.add(code_text)
+                if doc_id is not None:
+                    used_docs.add(doc_id)
+                batch.append(idx)
+
+            if batch:
+                yield batch
+
+    def __len__(self) -> int:
+        if not self.data or self.batch_size <= 0:
+            return 0
+        return (len(self.data) + self.batch_size - 1) // self.batch_size
+
+
 def main() -> None:
     import argparse
 
@@ -477,8 +515,6 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--max-train-docs", type=int, default=50)
-    parser.add_argument("--valid-docs", type=int, default=10)
     parser.add_argument("--early-stop-patience", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -489,30 +525,37 @@ def main() -> None:
     model = SentenceTransformer(args.base_model, device=device)
 
     code_to_text = load_ontology_texts(ONTOLOGY_PATH)
-    docs_all = _load_docs_from_csv(
-        TRAIN_CSV,
-        code_to_text,
-        max_docs=int(args.max_train_docs) if int(args.max_train_docs) > 0 else None,
-        seed=int(args.seed),
-    )
-    if not docs_all:
-        raise RuntimeError("no train docs loaded")
-    train_docs, valid_docs = _split_train_valid_docs(docs_all, valid_docs=int(args.valid_docs))
-    train_examples = load_train_examples_from_pairs(code_to_text)
+    train_examples, train_doc_ids = build_train_pairs_from_segments(code_to_text)
     if not train_examples:
         raise RuntimeError("no training pairs built")
 
-    print(f"Train docs (для валидации): {len(train_docs)}")
-    print(f"Valid docs: {len(valid_docs)}")
-    print(f"Train pairs (из сбалансированного файла): {len(train_examples)}")
-
-    train_dataloader = DataLoader(
-        train_examples,
-        batch_size=args.batch_size,
-        shuffle=False,
-    )
+    print(f"Train pairs (из сегментов): {len(train_examples)}")
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
+
+    # Кастомный батчер: в пределах батча уникальные сегменты, специализации и документы
+    g = torch.Generator()
+    g.manual_seed(int(args.seed))
+    batch_sampler = UniquePairsBatchSampler(
+        train_examples,
+        doc_ids=train_doc_ids,
+        batch_size=int(args.batch_size),
+        generator=g,
+    )
+
+    class _BatchIterator:
+        def __init__(self, data, sampler):
+            self.data = data
+            self.sampler = sampler
+
+        def __iter__(self):
+            for batch_indices in self.sampler:
+                yield [self.data[i] for i in batch_indices]
+
+        def __len__(self):
+            return len(self.sampler)
+
+    train_dataloader = _BatchIterator(train_examples, batch_sampler)
 
     total_steps = len(train_dataloader) * int(args.epochs)
     warmup_steps = max(10, int(0.1 * total_steps))
@@ -527,30 +570,60 @@ def main() -> None:
     best_epoch = 0
     bad_epochs = 0
 
-    for epoch in range(1, int(args.epochs) + 1):
-        model.fit(
-            train_objectives=[(train_dataloader, train_loss)],
-            epochs=1,
-            warmup_steps=warmup_steps if epoch == 1 else 0,
-            optimizer_params={"lr": args.learning_rate},
-            use_amp=torch.cuda.is_available(),
-            show_progress_bar=True,
-        )
+    # Оптимизатор и шедулер
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    from transformers import get_linear_schedule_with_warmup
 
-        if valid_docs:
-            valid_metrics = evaluate_encoder_on_docs(model, valid_docs, code_to_text, k=20)
-            r20 = float(valid_metrics.get("R@20", 0.0))
-            print(f"Valid R@20 after epoch {epoch}: {r20:.4f}")
-            if r20 > best_r20 + 1e-9:
-                best_r20 = r20
-                best_epoch = epoch
-                bad_epochs = 0
-                model.save(str(best_dir))
-            else:
-                bad_epochs += 1
-                if bad_epochs > int(args.early_stop_patience):
-                    print(f"Early stopping at epoch {epoch}. Best epoch={best_epoch} R@20={best_r20:.4f}")
-                    break
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+    )
+
+    for epoch in range(1, int(args.epochs) + 1):
+        model.train()
+        epoch_loss = 0.0
+        for step, batch in enumerate(train_dataloader, start=1):
+            # smart_batching_collate в этой версии возвращает (sentence_features, labels)
+            sentence_features, labels = model.smart_batching_collate(batch)
+
+            # Перенос признаков на нужное устройство
+            for sent_feat in sentence_features:
+                for k, v in list(sent_feat.items()):
+                    if isinstance(v, torch.Tensor):
+                        sent_feat[k] = v.to(device)
+
+            loss_value = train_loss(sentence_features, labels)
+            loss_value.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+            epoch_loss += float(loss_value.detach().cpu())
+
+        print(f"Epoch {epoch} train loss: {epoch_loss / max(1, len(train_dataloader)):.4f}")
+
+        valid_metrics = evaluate_encoder_on_segmented_csv(
+            model,
+            VALID_SEGMENTS_CSV,
+            code_to_text,
+            k=20,
+            segment_batch_size=64,
+        )
+        r20 = float(valid_metrics.get("R@20", 0.0))
+        print(f"Valid R@20 after epoch {epoch}: {r20:.4f}")
+        if r20 > best_r20 + 1e-9:
+            best_r20 = r20
+            best_epoch = epoch
+            bad_epochs = 0
+            model.save(str(best_dir))
+        else:
+            bad_epochs += 1
+            if bad_epochs > int(args.early_stop_patience):
+                print(f"Early stopping at epoch {epoch}. Best epoch={best_epoch} R@20={best_r20:.4f}")
+                break
 
     model.save(str(output_dir))
     print(f"Model saved to: {output_dir}")
@@ -573,15 +646,13 @@ def main() -> None:
     payload = {
         "original_metrics": original_metrics,
         "finetuned_metrics": finetuned_metrics,
-        "valid_best": {"epoch": best_epoch, "R@20": best_r20} if valid_docs else None,
+        "valid_best": {"epoch": best_epoch, "R@20": best_r20},
         "params": {
             "base_model": args.base_model,
             "output_dir": str(output_dir),
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
-            "max_train_docs": args.max_train_docs,
-            "valid_docs": args.valid_docs,
             "early_stop_patience": args.early_stop_patience,
             "seed": args.seed,
         },

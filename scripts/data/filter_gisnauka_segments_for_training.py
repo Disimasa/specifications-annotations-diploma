@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SEGMENTS_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train.csv"
-OUT_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_filtered.csv"
+SEGMENTS_CSV_DEFAULT = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented.csv"
+OUT_CSV_DEFAULT = PROJECT_DIR / "data" / "gold" / "gisnauka_segments_train_augmented_filtered.csv"
 
 
 def is_leaf_grnti_code(code: str) -> bool:
@@ -17,8 +17,18 @@ def is_leaf_grnti_code(code: str) -> bool:
 
 
 def main() -> None:
-    if not SEGMENTS_CSV.exists():
-        raise FileNotFoundError(f"Не найден файл сегментов: {SEGMENTS_CSV}")
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--segments-csv", type=str, default=str(SEGMENTS_CSV_DEFAULT))
+    parser.add_argument("--out-csv", type=str, default=str(OUT_CSV_DEFAULT))
+    args = parser.parse_args()
+
+    segments_csv = Path(str(args.segments_csv))
+    out_csv = Path(str(args.out_csv))
+
+    if not segments_csv.exists():
+        raise FileNotFoundError(f"Не найден файл сегментов: {segments_csv}")
 
     try:
         csv.field_size_limit(sys.maxsize)
@@ -26,7 +36,7 @@ def main() -> None:
         csv.field_size_limit(10_000_000)
 
     segments_per_doc: dict[str, int] = {}
-    with SEGMENTS_CSV.open(encoding="utf-8", newline="") as f:
+    with segments_csv.open(encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             doc_id = (row.get("doc_id") or "").strip()
@@ -36,7 +46,7 @@ def main() -> None:
 
     kept_doc_ids = {doc_id for doc_id, cnt in segments_per_doc.items() if cnt < 14}
 
-    with SEGMENTS_CSV.open(encoding="utf-8", newline="") as f_in:
+    with segments_csv.open(encoding="utf-8", newline="") as f_in:
         reader = csv.DictReader(f_in)
         fieldnames = reader.fieldnames or [
             "doc_id",
@@ -47,8 +57,8 @@ def main() -> None:
             "grnti_codes",
         ]
 
-        OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-        with OUT_CSV.open(encoding="utf-8", newline="", mode="w") as f_out:
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        with out_csv.open(encoding="utf-8", newline="", mode="w") as f_out:
             writer = csv.DictWriter(f_out, fieldnames=fieldnames)
             writer.writeheader()
 
