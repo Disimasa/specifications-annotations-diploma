@@ -22,6 +22,16 @@ from annotation.annotator import DEFAULT_CROSS_ENCODER_MODEL, EmbeddingAnnotator
 from lib.eval_metrics import ap_at_k, mean, mrr_at_k, precision_at_k, recall_at_k
 from lib.gold_io import GoldItem, read_gold_items
 from lib.grnti_ontology import aggregate_codes_to_level, is_leaf_grnti_code, load_ontology_code_map
+from lib.ontology_embeddings_registry import get_precomputed_embeddings_path_for_model
+from lib.eval_defaults import (
+    EVAL_K,
+    DEFAULT_THRESHOLD,
+    DEFAULT_TOP_K,
+    DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT,
+    DEFAULT_RERANK_TOP_K,
+    DEFAULT_CONFIDENCE_AGGREGATION,
+    DEFAULT_FILTER_SEGMENTS,
+)
 
 
 def _default_embeddings_path_for_model(model_name: str) -> Path:
@@ -125,20 +135,6 @@ def evaluate(
 
     competency_id_to_code = load_ontology_code_map(ontology_path)
     items = _read_gold_items(gold_path)
-
-    if gold_path.suffix.lower() == ".csv":
-        by_top: Dict[str, List[GoldItem]] = {}
-        for it in items:
-            top = (it.top_code or (it.gold_codes[0].split(".")[0] if it.gold_codes else "")).strip()
-            if not top:
-                continue
-            by_top.setdefault(top, []).append(it)
-        reduced: List[GoldItem] = []
-        for top in sorted(by_top.keys()):
-            docs = by_top[top]
-            if docs:
-                reduced.append(docs[0])
-        items = reduced
     precomputed = emb_path if emb_path and emb_path.exists() else None
 
     ce_model: Optional[str] = None
@@ -150,6 +146,7 @@ def evaluate(
         model_name=bi_encoder_model,
         cross_encoder_model=ce_model,
         precomputed_embeddings_path=precomputed,
+        use_precomputed_embeddings=bool(st.session_state.get("use_precomputed_onto_emb", True)),
     )
 
     per_doc: List[dict] = []
@@ -280,11 +277,14 @@ def evaluate(
                       f"MAP@{k}": mean(agg_grand[k]["ap"]) for k in eval_ks
                   }
 
+    emb_path_used = getattr(annotator, "precomputed_embeddings_path", None)
+
     return {
         "macro": macro,
         "macro_parent": macro_parent,
         "macro_grandparent": macro_grand,
         "per_doc": per_doc,
+        "_ontology_emb_path": str(emb_path_used) if emb_path_used is not None else None,
     }
 
 
@@ -350,24 +350,21 @@ def main() -> None:
             gold_path_str = st.text_input("GOLD CSV", value=str(DEFAULT_GOLD_CSV_PATH))
 
         ontology_path_str = st.text_input("Онтология", value=str(DEFAULT_ONTOLOGY_PATH))
-        emb_default_candidate = _default_embeddings_path_for_model(bi_encoder_model)
-        if emb_default_candidate.exists():
-            emb_default = str(emb_default_candidate)
-        else:
-            emb_default = ""
-        emb_path_str = st.text_input(
-            "Эмбеддинги онтологии (npz, пусто = кодировать выбранной моделью)",
-            value=emb_default,
-            key="emb_path",
-        )
 
         st.header("Параметры пайплайна")
-        st.session_state.threshold = st.slider("Порог score", 0.0, 1.0, 0.55, 0.01, key="thr")
+        st.session_state.threshold = st.slider(
+            "Порог score",
+            0.0,
+            1.0,
+            DEFAULT_THRESHOLD,
+            0.01,
+            key="thr",
+        )
         st.session_state.top_k = st.number_input(
             "Top-K сегментов на компетенцию",
             min_value=1,
             max_value=100,
-            value=10,
+            value=DEFAULT_TOP_K,
             step=1,
             key="topk",
             help="Скрипт оценки использует 50; при 10 метрики (R@20 и др.) могут отличаться.",
@@ -376,7 +373,7 @@ def main() -> None:
             "Контекст (макс. длина сегмента, 0=выкл)",
             min_value=0,
             max_value=2000,
-            value=0,
+            value=DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT,
             step=10,
             key="ctxlen",
         )
@@ -384,25 +381,39 @@ def main() -> None:
             "Rerank top-K компетенций (0=выкл)",
             min_value=0,
             max_value=200,
-            value=0,
+            value=DEFAULT_RERANK_TOP_K,
             step=1,
             key="rerank",
         )
+        agg_options = [
+            "sum",
+            "sum_log_count",
+            "mean_log_count",
+            "max",
+            "mean",
+            "median",
+            "weighted_mean",
+        ]
+        try:
+            agg_index_default = agg_options.index(DEFAULT_CONFIDENCE_AGGREGATION)
+        except ValueError:
+            agg_index_default = 0
         st.session_state.confidence_aggregation = st.selectbox(
             "Агрегация скоров сегментов",
-            options=[
-                "sum",
-                "sum_log_count",
-                "mean_log_count",
-                "max",
-                "mean",
-                "median",
-                "weighted_mean",
-            ],
-            index=0,
+            options=agg_options,
+            index=agg_index_default,
             key="agg",
         )
-        st.session_state.filter_segments = st.checkbox("Фильтровать неинформативные сегменты", value=True, key="filt")
+        st.session_state.filter_segments = st.checkbox(
+            "Фильтровать неинформативные сегменты",
+            value=DEFAULT_FILTER_SEGMENTS,
+            key="filt",
+        )
+        st.checkbox(
+            "Использовать прекомпилированные эмбеддинги онтологии (если доступны)",
+            value=True,
+            key="use_precomputed_onto_emb",
+        )
 
         st.header("Метрики")
         eval_ks_str = st.text_input("K для метрик (через запятую)", value="1,3,5,10,20")
@@ -422,7 +433,9 @@ def main() -> None:
 
     gold_path = Path(gold_path_str)
     ontology_path = Path(ontology_path_str)
-    emb_path = Path(emb_path_str) if emb_path_str.strip() else None
+    # Фактический выбор NPZ идёт внутри EmbeddingAnnotator по названию модели через словарь;
+    # здесь не передаём явный путь, чтобы не ломать этот маппинг.
+    emb_path: Optional[Path] = None
 
     eval_ks: List[int] = []
     for part in eval_ks_str.split(","):
@@ -450,6 +463,12 @@ def main() -> None:
     mm = int(elapsed_s // 60)
     ss = int(elapsed_s % 60)
     st.caption(f"Время расчёта метрик: **{elapsed_s:.2f} сек** (≈ {mm:02d}:{ss:02d})")
+
+    emb_path_used_str = summary.get("_ontology_emb_path")
+    if emb_path_used_str:
+        st.success(f"Используются прекомпилированные эмбеддинги онтологии: **{Path(emb_path_used_str).name}**")
+    else:
+        st.caption("Эмбеддинги онтологии вычисляются онлайн.")
 
     st.subheader("Листовой уровень (XX.YY.ZZ)")
     st.dataframe(_macro_to_table(summary["macro"], eval_ks), use_container_width=True)

@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+EVAL_K: int = 20
+
+DEFAULT_THRESHOLD: float = 0.52
+DEFAULT_TOP_K: int = 5
+DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT: int = 315
+DEFAULT_RERANK_TOP_K: int = 0
+DEFAULT_CONFIDENCE_AGGREGATION: str = "mean_log_count"
+DEFAULT_FILTER_SEGMENTS: bool = True
+

@@ -23,6 +23,15 @@ from lib.grnti_ontology import (
     load_ontology_code_map,
     load_ontology_texts,
 )
+from lib.eval_defaults import (
+    EVAL_K,
+    DEFAULT_THRESHOLD,
+    DEFAULT_TOP_K,
+    DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT,
+    DEFAULT_RERANK_TOP_K,
+    DEFAULT_CONFIDENCE_AGGREGATION,
+    DEFAULT_FILTER_SEGMENTS,
+)
 
 DEFAULT_ONTOLOGY = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 DEFAULT_TEST_GISNAUKA = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
@@ -32,14 +41,6 @@ DEFAULT_VALID_CSV = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_valid.csv"
 
 BEST_MODEL_BASE = PROJECT_DIR / "models" / "bi-encoder-gisnauka-trainer" / "best"
 FALLBACK_MODEL = "deepvk/USER-bge-m3"
-
-EVAL_K = 20
-DEFAULT_THRESHOLD = 0.55
-DEFAULT_TOP_K = 50
-DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT = 0
-DEFAULT_RERANK_TOP_K = 0
-DEFAULT_CONFIDENCE_AGGREGATION = "sum"
-DEFAULT_FILTER_SEGMENTS = True
 
 
 def _resolve_default_model() -> str:

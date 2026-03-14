@@ -11,6 +11,7 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 from .ontology import Ontology
 from .segment_filter import SegmentFilter
 from .segmenter import TextSegmenter
+from lib.ontology_embeddings_registry import get_precomputed_embeddings_path_for_model
 
 DEFAULT_MODEL = "deepvk/USER-bge-m3"
 
@@ -24,6 +25,7 @@ class EmbeddingAnnotator:
         model_name: str = DEFAULT_MODEL,
         cross_encoder_model: str | None = None,
         precomputed_embeddings_path: Path | None = None,
+        use_precomputed_embeddings: bool = True,
     ) -> None:
         self.model = SentenceTransformer(model_name)
 
@@ -38,8 +40,18 @@ class EmbeddingAnnotator:
         self.segmenter = TextSegmenter()
         self.segment_filter = SegmentFilter()
 
-        if precomputed_embeddings_path is not None and precomputed_embeddings_path.exists():
-            self._competency_embeddings = self._load_precomputed_embeddings(precomputed_embeddings_path)
+        emb_path: Optional[Path] = None
+        if use_precomputed_embeddings:
+            if precomputed_embeddings_path is not None and precomputed_embeddings_path.exists():
+                emb_path = precomputed_embeddings_path
+            else:
+                auto_path = get_precomputed_embeddings_path_for_model(model_name)
+                if auto_path is not None and auto_path.exists():
+                    emb_path = auto_path
+        self.precomputed_embeddings_path: Optional[Path] = emb_path
+
+        if emb_path is not None:
+            self._competency_embeddings = self._load_precomputed_embeddings(emb_path)
         else:
             self._competency_embeddings = self._encode_competencies()
         self._competency_ids: List[str] = [c.id for c in self.ontology.competencies]

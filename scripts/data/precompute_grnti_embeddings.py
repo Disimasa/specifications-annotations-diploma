@@ -33,13 +33,23 @@ def build_text_for_embedding(node: dict) -> str:
     return ". ".join(parts).strip(". ").strip()
 
 
-def _make_output_path(model_name: str) -> Path:
-    candidate = model_name.strip()
-    if "/" in candidate:
-        tag = candidate.split("/")[-1]
+def _normalize_tag(raw: str) -> str:
+    tag = raw.strip()
+    if not tag:
+        tag = "default"
+    return tag.replace(" ", "_").replace("\\", "_").replace("/", "_")
+
+
+def _make_output_path(model_name: str, tag_override: str | None = None) -> Path:
+    if tag_override:
+        tag = _normalize_tag(tag_override)
     else:
-        tag = Path(candidate).name or candidate
-    tag = tag.replace(" ", "_").replace("\\", "_").replace("/", "_")
+        candidate = model_name.strip()
+        if "/" in candidate:
+            tag = candidate.split("/")[-1]
+        else:
+            tag = Path(candidate).name or candidate
+        tag = _normalize_tag(tag)
     return OUTPUT_DIR / f"ontology_grnti_embeddings_{tag}.npz"
 
 
@@ -55,7 +65,17 @@ def main() -> None:
         "--output",
         type=str,
         default="",
-        help="Путь к выходному .npz. По умолчанию формируется автоматически по имени модели",
+        help="Полный путь к выходному .npz. Если не задан, путь формируется автоматически.",
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        help=(
+            "Метка для имени файла эмбеддингов (ontology_grnti_embeddings_<tag>.npz). "
+            "Удобно задать таймстемп модели из best‑папки. "
+            "Если не задана, используется basename модели."
+        ),
     )
     args = parser.parse_args()
 
@@ -97,7 +117,8 @@ def main() -> None:
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = _make_output_path(args.model)
+        tag_override = args.tag or None
+        output_path = _make_output_path(args.model, tag_override=tag_override)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(

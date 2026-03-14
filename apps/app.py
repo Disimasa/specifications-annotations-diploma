@@ -22,7 +22,8 @@ SRC_DIR =PROJECT_DIR /"src"
 if str (SRC_DIR )not in sys .path :
     sys .path .insert (0 ,str (SRC_DIR ))
 
-from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator 
+from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator
+from lib .ontology_embeddings_registry import get_precomputed_embeddings_path_for_model 
 
 
 def _normalize_model_path (value :str )->str :
@@ -121,11 +122,13 @@ cross_encoder_model :Optional [str ],
 )->EmbeddingAnnotator :
     candidate =_default_embeddings_path_for_model (bi_encoder_model )
     emb_path =candidate if candidate .exists ()else DEFAULT_EMBEDDINGS_PATH 
+    use_pre =bool (st .session_state .get ("use_precomputed_onto_emb_app",True ))
     return EmbeddingAnnotator (
     ontology_path =Path (ontology_path ),
     model_name =bi_encoder_model ,
     cross_encoder_model =_normalize_model_path (cross_encoder_model or "")if cross_encoder_model else None ,
     precomputed_embeddings_path =emb_path if emb_path .exists ()else None ,
+    use_precomputed_embeddings =use_pre ,
     )
 
 
@@ -219,6 +222,11 @@ def main ()->None :
         )
 
         filter_segments =st .checkbox ("Фильтровать неинформативные сегменты",value =True )
+        use_precomputed_onto_emb =st .checkbox (
+        "Использовать прекомпилированные эмбеддинги онтологии (если доступны)",
+        value =True ,
+        key ="use_precomputed_onto_emb_app",
+        )
 
         st .divider ()
         st .header ("Модели")
@@ -288,6 +296,13 @@ def main ()->None :
                 bi_encoder_model =bi_encoder_model ,
                 cross_encoder_model =cross_encoder_model if (enable_rerank and rerank_top_k >0 )else None ,
                 )
+
+                used_emb =getattr (annotator ,"precomputed_embeddings_path",None )
+                if used_emb is not None :
+                    used_emb_name =Path (used_emb ).name if isinstance (used_emb ,Path )else str (used_emb )
+                    st .success (f"Используются прекомпилированные эмбеддинги онтологии: **{used_emb_name}**")
+                else :
+                    st .caption ("Эмбеддинги онтологии вычисляются онлайн.")
 
                 status_placeholder =st .empty ()
                 progress_bar =st .progress (0 )
