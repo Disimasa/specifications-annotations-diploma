@@ -241,7 +241,10 @@ def main() -> None:
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
 
-    output_dir = Path(args.output_dir)
+    # Базовая директория + поддиректория с таймстемпом
+    base_output_dir = Path(args.output_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = base_output_dir / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     training_args = SentenceTransformerTrainingArguments(
@@ -295,6 +298,7 @@ def main() -> None:
         "params": {
             "base_model": args.base_model,
             "output_dir": str(output_dir),
+            "base_output_dir": str(base_output_dir),
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,

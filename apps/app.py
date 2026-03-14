@@ -14,6 +14,8 @@ DEFAULT_ONTOLOGY_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 DEFAULT_EMBEDDINGS_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings.npz"
 DEFAULT_TEXTS_DIR =PROJECT_DIR /"data"/"specifications"/"texts"
 
+BEST_MODEL_BASE =PROJECT_DIR /"models"/"bi-encoder-gisnauka-trainer"/"best"
+FALLBACK_BI_ENCODER ="deepvk/USER-bge-m3"
 
 
 SRC_DIR =PROJECT_DIR /"src"
@@ -45,11 +47,21 @@ def _default_embeddings_path_for_model (model_name :str )->Path :
 
 
 def _list_bi_encoder_options ()->List [str ]:
-    options :List [str ]=["deepvk/USER-bge-m3"]
+    options :List [str ]=[]
+    # Первая опция — best обученная модель, если она есть
+    if BEST_MODEL_BASE .exists ()and BEST_MODEL_BASE .is_dir ():
+        subdirs =[p for p in sorted (BEST_MODEL_BASE .iterdir ())if p .is_dir ()]
+        if subdirs :
+            options .append (str (subdirs [0 ]))
+    if not options :
+        options .append (FALLBACK_BI_ENCODER )
+    else :
+        options .append (FALLBACK_BI_ENCODER )
+
     models_dir =PROJECT_DIR /"models"
     if models_dir .exists ():
         for p in sorted (models_dir .iterdir ()):
-            if p .is_dir ():
+            if p .is_dir ()and p .resolve ()!=BEST_MODEL_BASE .parent .resolve ():
                 options .append (str (p ))
     seen :set [str ]=set ()
     uniq :List [str ]=[]

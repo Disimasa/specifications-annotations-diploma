@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import json
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-import time
-
-import csv
-import sys as _sys
 
 import streamlit as st
 
@@ -15,13 +11,17 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ONTOLOGY_PATH = PROJECT_DIR / "data" / "ontology_grnti_with_llm.json"
 DEFAULT_EMBEDDINGS_PATH = PROJECT_DIR / "data" / "ontology_grnti_embeddings.npz"
 DEFAULT_GOLD_JSONL_PATH = PROJECT_DIR / "data" / "gold" / "test_set_manual_draft.jsonl"
-DEFAULT_GOLD_CSV_PATH = PROJECT_DIR / "data" / "gold" / "gisnauka_samples.csv"
+DEFAULT_GOLD_CSV_PATH = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv"
+DEFAULT_GOLD_DOC_TEST_CSV_PATH = PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test_docs.csv"
 
 SRC_DIR = PROJECT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from annotation.annotator import DEFAULT_CROSS_ENCODER_MODEL, EmbeddingAnnotator
+from lib.eval_metrics import ap_at_k, mean, mrr_at_k, precision_at_k, recall_at_k
+from lib.gold_io import GoldItem, read_gold_items
+from lib.grnti_ontology import aggregate_codes_to_level, is_leaf_grnti_code, load_ontology_code_map
 
 
 def _default_embeddings_path_for_model(model_name: str) -> Path:
@@ -30,12 +30,28 @@ def _default_embeddings_path_for_model(model_name: str) -> Path:
     return DEFAULT_EMBEDDINGS_PATH.with_name(f"ontology_grnti_embeddings_{safe}.npz")
 
 
+BEST_MODEL_BASE = PROJECT_DIR / "models" / "bi-encoder-gisnauka-trainer" / "best"
+FALLBACK_BI_ENCODER = "deepvk/USER-bge-m3"
+
+
+def _resolve_best_model() -> str:
+    if not BEST_MODEL_BASE.exists() or not BEST_MODEL_BASE.is_dir():
+        return FALLBACK_BI_ENCODER
+    subdirs = sorted(p for p in BEST_MODEL_BASE.iterdir() if p.is_dir())
+    if subdirs:
+        return str(subdirs[0])
+    return FALLBACK_BI_ENCODER
+
+
 def _list_bi_encoder_options() -> List[str]:
-    options: List[str] = ["deepvk/USER-bge-m3"]
+    """Первой опцией — best обученная модель, затем fallback и остальные модели, без родительской trainer-папки."""
+    options: List[str] = [_resolve_best_model()]
+    options.append(FALLBACK_BI_ENCODER)
     models_dir = PROJECT_DIR / "models"
+    skip_parent_resolved = BEST_MODEL_BASE.parent.resolve()
     if models_dir.exists():
         for p in sorted(models_dir.iterdir()):
-            if p.is_dir():
+            if p.is_dir() and p.resolve() != skip_parent_resolved:
                 options.append(str(p))
     seen: set[str] = set()
     uniq: List[str] = []
@@ -47,173 +63,9 @@ def _list_bi_encoder_options() -> List[str]:
     return uniq
 
 
-class GoldItem:
-    def __init__(
-        self,
-        doc_id: str,
-        gold_codes: Tuple[str, ...],
-        text_path: Optional[Path] = None,
-        text: Optional[str] = None,
-        top_code: Optional[str] = None,
-    ) -> None:
-        self.doc_id = doc_id
-        self.gold_codes = gold_codes
-        self.text_path = text_path
-        self.text = text
-        self.top_code = top_code
-
-
-def _load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _load_ontology_code_map(ontology_path: Path) -> Dict[str, str]:
-    data = _load_json(ontology_path)
-    out: Dict[str, str] = {}
-    for n in data.get("nodes", []):
-        nid = n.get("id")
-        code = n.get("code")
-        if isinstance(nid, str) and isinstance(code, str) and code.strip():
-            out[nid] = code.strip()
-    return out
-
-
-def _is_leaf_grnti_code(code: str) -> bool:
-    parts = code.split(".")
-    return len(parts) == 3 and all(parts) and all(p.isdigit() for p in parts)
-
-
-def _to_level_code(code: str, level: int) -> Optional[str]:
-    parts = code.split(".")
-    if level <= 0 or level > len(parts):
-        return None
-    sub = parts[:level]
-    if not all(p.isdigit() for p in sub):
-        return None
-    return ".".join(sub)
-
-
-def _aggregate_codes_to_level(codes: Sequence[str], level: int) -> List[str]:
-    seen: set[str] = set()
-    out: List[str] = []
-    for c in codes:
-        lc = _to_level_code(c, level)
-        if not lc or lc in seen:
-            continue
-        seen.add(lc)
-        out.append(lc)
-    return out
-
-
 def _read_gold_items(gold_path: Path) -> List[GoldItem]:
-    items: List[GoldItem] = []
-
-    if gold_path.suffix.lower() == ".csv":
-
-        try:
-            csv.field_size_limit(_sys.maxsize)
-        except (OverflowError, ValueError):
-
-            csv.field_size_limit(10_000_000)
-
-        with gold_path.open(encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for i, row in enumerate(reader):
-                title = (row.get("title") or "").strip()
-                abstract = (row.get("abstract") or "").strip()
-                codes_raw = (row.get("grnti_codes") or "").strip()
-                if not codes_raw:
-                    continue
-                codes = [c.strip() for c in codes_raw.split(";") if c.strip()]
-                codes = [c for c in codes if _is_leaf_grnti_code(c)]
-                codes = sorted(set(codes))
-                if not codes:
-                    continue
-                text = f"{title}\n\n{abstract}".strip()
-                if not text:
-                    continue
-                doc_id = row.get("doc_id") or f"gisnauka_{i}"
-                top_code = (row.get("top_code") or "").strip() or codes[0].split(".")[0]
-                items.append(GoldItem(doc_id=str(doc_id), gold_codes=tuple(codes), text=text, top_code=top_code))
-        return items
-
-    for raw_line in gold_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        obj = json.loads(line)
-        doc_id = str(obj.get("doc_id", "")).strip()
-        if not doc_id:
-            continue
-
-        gold_codes_raw = obj.get("gold_codes") or obj.get("labels") or []
-        gold_codes: List[str] = []
-        if isinstance(gold_codes_raw, list):
-            for x in gold_codes_raw:
-                if isinstance(x, str):
-                    gold_codes.append(x.strip())
-                elif isinstance(x, dict) and isinstance(x.get("code"), str):
-                    gold_codes.append(x["code"].strip())
-
-        gold_codes = [c for c in gold_codes if _is_leaf_grnti_code(c)]
-        gold_codes = sorted(set(gold_codes))
-
-        tp = obj.get("text_path")
-        if isinstance(tp, str) and tp.strip():
-            text_path = Path(tp)
-        else:
-            text_path = DEFAULT_GOLD_JSONL_PATH.parent.parent / "specifications" / "texts" / f"{doc_id}.txt"
-
-        items.append(GoldItem(doc_id=doc_id, gold_codes=tuple(gold_codes), text_path=text_path))
-    return items
-
-
-def precision_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-    if k <= 0:
-        return 0.0
-    pred_k = pred[:k]
-    if not pred_k:
-        return 0.0
-    g = set(gold)
-    return sum(1 for p in pred_k if p in g) / float(len(pred_k))
-
-
-def recall_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-    if k <= 0:
-        return 0.0
-    g = set(gold)
-    if not g:
-        return 1.0
-    pred_k = pred[:k]
-    return sum(1 for p in pred_k if p in g) / float(len(g))
-
-
-def mrr_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-    g = set(gold)
-    if not g:
-        return 1.0
-    for i, p in enumerate(pred[:k], start=1):
-        if p in g:
-            return 1.0 / float(i)
-    return 0.0
-
-
-def ap_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-    g = set(gold)
-    if not g:
-        return 1.0
-    hits = 0
-    s = 0.0
-    for i, p in enumerate(pred[:k], start=1):
-        if p in g:
-            hits += 1
-            s += hits / float(i)
-    return s / float(len(g))
-
-
-def mean(xs: Iterable[float]) -> float:
-    xs = list(xs)
-    return sum(xs) / float(len(xs)) if xs else 0.0
+    default_texts = DEFAULT_GOLD_JSONL_PATH.parent.parent / "specifications" / "texts"
+    return read_gold_items(gold_path, default_texts_dir=default_texts)
 
 
 def run_predictions_for_doc(
@@ -247,7 +99,7 @@ def run_predictions_for_doc(
         if not code:
             continue
         code = code.strip()
-        if not _is_leaf_grnti_code(code):
+        if not is_leaf_grnti_code(code):
             continue
         if code not in codes:
             codes.append(code)
@@ -264,7 +116,14 @@ def evaluate(
     eval_ks: Sequence[int],
     max_pred_codes: int,
 ) -> Dict[str, dict]:
-    competency_id_to_code = _load_ontology_code_map(ontology_path)
+    # Защита от прямого выбора родительской папки trainer: мапим на best-подпапку
+    try:
+        if Path(bi_encoder_model).resolve() == BEST_MODEL_BASE.parent.resolve():
+            bi_encoder_model = _resolve_best_model()
+    except (OSError, RuntimeError):
+        pass
+
+    competency_id_to_code = load_ontology_code_map(ontology_path)
     items = _read_gold_items(gold_path)
 
     if gold_path.suffix.lower() == ".csv":
@@ -342,10 +201,10 @@ def evaluate(
             agg_leaf[k]["mrr"].append(mrr)
             agg_leaf[k]["ap"].append(ap)
 
-        gold_parent = _aggregate_codes_to_level(it.gold_codes, 2)
-        pred_parent = _aggregate_codes_to_level(pred_codes, 2)
-        gold_grand = _aggregate_codes_to_level(it.gold_codes, 1)
-        pred_grand = _aggregate_codes_to_level(pred_codes, 1)
+        gold_parent = aggregate_codes_to_level(it.gold_codes, 2)
+        pred_parent = aggregate_codes_to_level(pred_codes, 2)
+        gold_grand = aggregate_codes_to_level(it.gold_codes, 1)
+        pred_grand = aggregate_codes_to_level(pred_codes, 1)
 
         doc_metrics_parent: Dict[str, float] = {}
         doc_metrics_grand: Dict[str, float] = {}
@@ -451,7 +310,11 @@ def main() -> None:
         st.header("Источник GOLD")
         gold_source = st.radio(
             "Выбор источника",
-            options=["JSONL (локальные ТЗ)", "CSV (gisnauka выборка)"],
+            options=[
+                "JSONL (локальные ТЗ)",
+                "CSV (gisnauka выборка, старый test)",
+                "CSV (gisnauka документы, новый test)",
+            ],
             index=1,
         )
 
@@ -481,6 +344,8 @@ def main() -> None:
         st.header("Данные")
         if gold_source.startswith("JSONL"):
             gold_path_str = st.text_input("GOLD JSONL", value=str(DEFAULT_GOLD_JSONL_PATH))
+        elif "документы" in gold_source:
+            gold_path_str = st.text_input("GOLD CSV (docs test)", value=str(DEFAULT_GOLD_DOC_TEST_CSV_PATH))
         else:
             gold_path_str = st.text_input("GOLD CSV", value=str(DEFAULT_GOLD_CSV_PATH))
 
@@ -489,8 +354,12 @@ def main() -> None:
         if emb_default_candidate.exists():
             emb_default = str(emb_default_candidate)
         else:
-            emb_default = str(DEFAULT_EMBEDDINGS_PATH)
-        emb_path_str = emb_default
+            emb_default = ""
+        emb_path_str = st.text_input(
+            "Эмбеддинги онтологии (npz, пусто = кодировать выбранной моделью)",
+            value=emb_default,
+            key="emb_path",
+        )
 
         st.header("Параметры пайплайна")
         st.session_state.threshold = st.slider("Порог score", 0.0, 1.0, 0.55, 0.01, key="thr")
@@ -501,6 +370,7 @@ def main() -> None:
             value=10,
             step=1,
             key="topk",
+            help="Скрипт оценки использует 50; при 10 метрики (R@20 и др.) могут отличаться.",
         )
         st.session_state.max_segment_length_for_context = st.number_input(
             "Контекст (макс. длина сегмента, 0=выкл)",
