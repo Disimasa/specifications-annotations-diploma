@@ -56,95 +56,61 @@ def load_ontology_texts(path: Path) -> Dict[str, str]:
 
 
 def evaluate_on_test(model_ref: str) -> Dict[str, float]:
-    import csv
+    """R@20 и P@20 на тесте через пайплайн аннотирования (как в scripts/eval/evaluate_r20_full_pipeline.py)."""
+    eval_dir = PROJECT_DIR / "scripts" / "eval"
+    if str(eval_dir) not in sys.path:
+        sys.path.insert(0, str(eval_dir))
+    from evaluate_r20_full_pipeline import evaluate_dataset  # noqa: E402
+
+    from annotation.annotator import EmbeddingAnnotator
+    from lib.eval_defaults import (
+        DEFAULT_CONFIDENCE_AGGREGATION,
+        DEFAULT_FILTER_SEGMENTS,
+        DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT,
+        DEFAULT_RERANK_TOP_K,
+        DEFAULT_THRESHOLD,
+        DEFAULT_TOP_K,
+        EVAL_K,
+    )
+    from lib.gold_io import read_gold_csv
+    from lib.grnti_ontology import load_ontology_code_map
 
     if not TEST_CSV.exists():
         raise FileNotFoundError(f"test CSV not found: {TEST_CSV}")
+    if not ONTOLOGY_PATH.exists():
+        raise FileNotFoundError(f"ontology not found: {ONTOLOGY_PATH}")
 
-    try:
-        csv.field_size_limit(sys.maxsize)
-    except (OverflowError, ValueError):
-        csv.field_size_limit(10_000_000)
+    competency_id_to_code = load_ontology_code_map(ONTOLOGY_PATH)
+    annotator = EmbeddingAnnotator(
+        ontology_path=ONTOLOGY_PATH,
+        model_name=model_ref,
+        cross_encoder_model=None,
+        precomputed_embeddings_path=None,
+    )
+    items = read_gold_csv(TEST_CSV)
+    if not items:
+        return {"R@20": 0.0, "P@20": 0.0}
 
-    code_to_text = load_ontology_texts(ONTOLOGY_PATH)
-    all_codes: List[str] = [c for c in code_to_text.keys() if _is_leaf_grnti_code(c)]
-    if not all_codes:
-        raise RuntimeError("no leaf codes found in ontology")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    candidate_path = Path(model_ref)
-    if candidate_path.exists():
-        model_name = str(candidate_path)
-    else:
-        model_name = model_ref
-    model = SentenceTransformer(model_name, device=device)
-
-    code_texts = [code_to_text[c] for c in all_codes]
-    with torch.inference_mode():
-        code_embs = model.encode(
-            code_texts,
-            convert_to_tensor=True,
-            normalize_embeddings=True,
-            batch_size=64,
-        )
-
-    eval_k = 20
-    recalls: List[float] = []
-    precisions: List[float] = []
-
-    def precision_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-        if k <= 0:
-            return 0.0
-        pred_k = pred[:k]
-        if not pred_k:
-            return 0.0
-        g = set(gold)
-        return sum(1 for p in pred_k if p in g) / float(len(pred_k))
-
-    def recall_at_k(pred: Sequence[str], gold: Sequence[str], k: int) -> float:
-        if k <= 0:
-            return 0.0
-        g = set(gold)
-        if not g:
-            return 1.0
-        pred_k = pred[:k]
-        return sum(1 for p in pred_k if p in g) / float(len(g))
-
-    with TEST_CSV.open(encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            title = (row.get("title") or "").strip()
-            abstract = (row.get("abstract") or "").strip()
-            text = f"{title}\n\n{abstract}".strip()
-            if not text:
-                continue
-            codes_raw = (row.get("grnti_codes") or "").strip()
-            if not codes_raw:
-                continue
-            gold_codes = [c.strip() for c in codes_raw.split(";") if c.strip()]
-            gold_codes = [c for c in gold_codes if _is_leaf_grnti_code(c)]
-            gold_codes = sorted(set(gold_codes))
-            if not gold_codes:
-                continue
-            with torch.inference_mode():
-                text_emb = model.encode(
-                    [text],
-                    convert_to_tensor=True,
-                    normalize_embeddings=True,
-                    batch_size=1,
-                )
-                scores = torch.matmul(text_emb, code_embs.T)[0]
-                topk_vals, topk_idx = torch.topk(scores, k=min(eval_k, scores.shape[0]))
-            pred_codes = [all_codes[int(i)] for i in topk_idx.tolist()]
-
-            r20 = recall_at_k(pred_codes, gold_codes, eval_k)
-            p20 = precision_at_k(pred_codes, gold_codes, eval_k)
-            recalls.append(r20)
-            precisions.append(p20)
-
-    macro_r20 = sum(recalls) / float(len(recalls)) if recalls else 0.0
-    macro_p20 = sum(precisions) / float(len(precisions)) if precisions else 0.0
-    return {"R@20": macro_r20, "P@20": macro_p20}
+    k = EVAL_K
+    res = evaluate_dataset(
+        name="Test (пайплайн)",
+        items=items,
+        get_text_fn=lambda it: it.text or "",
+        get_gold_fn=lambda it: list(it.gold_codes),
+        annotator=annotator,
+        competency_id_to_code=competency_id_to_code,
+        threshold=DEFAULT_THRESHOLD,
+        top_k=DEFAULT_TOP_K,
+        max_segment_length_for_context=DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT,
+        rerank_top_k=DEFAULT_RERANK_TOP_K,
+        confidence_aggregation=DEFAULT_CONFIDENCE_AGGREGATION,
+        filter_segments=DEFAULT_FILTER_SEGMENTS,
+        k=k,
+    )
+    return {
+        "R@20": res[f"R@{k}"],
+        "P@20": res[f"P@{k}"],
+    }
 
 
 def build_pairs_from_segments(
@@ -193,6 +159,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-model", type=str, default=BASE_MODEL)
+    parser.add_argument("--resume", type=str, default="", help="Путь к чекпоинту для продолжения обучения (режим по сэмплам с --max-train-samples)")
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -202,7 +169,7 @@ def main() -> None:
         "--max-train-samples",
         type=int,
         default=None,
-        help="Если задано, ограничивает число обучающих пар (после перемешивания).",
+        help="Макс. сэмплов за один запуск; с --resume следующий чанк без дублей (обучение на всех данных по частям).",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -210,7 +177,18 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    model = SentenceTransformer(args.base_model, device=device)
+    samples_done = 0
+    if args.resume.strip():
+        resume_path = Path(args.resume.strip())
+        model = SentenceTransformer(str(resume_path), device=device)
+        print(f"Resumed from: {args.resume}")
+        state_path = resume_path / "training_state.json"
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            samples_done = int(state.get("samples_done", 0))
+            print(f"Resuming from samples_done={samples_done} (следующий чанк)")
+    else:
+        model = SentenceTransformer(args.base_model, device=device)
 
     code_to_text = load_ontology_texts(ONTOLOGY_PATH)
     train_examples = build_pairs_from_segments(TRAIN_SEGMENTS_CSV, code_to_text)
@@ -223,28 +201,53 @@ def main() -> None:
     print(f"Train pairs (из сегментов): {len(train_examples)}")
     print(f"Valid pairs (из сегментов): {len(valid_examples)}")
 
-    # Преобразуем список InputExample в HF Dataset с двумя текстовыми колонками
-    train_dataset = Dataset.from_list(
+    # Преобразуем в HF Dataset и детерминированно перемешиваем
+    full_train_dataset = Dataset.from_list(
         [{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in train_examples]
     )
+    full_train_dataset = full_train_dataset.shuffle(seed=int(args.seed))
     valid_dataset = Dataset.from_list(
         [{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in valid_examples]
     )
 
-    if args.max_train_samples is not None:
-        max_n = int(args.max_train_samples)
-        if max_n <= 0:
-            raise ValueError("--max-train-samples must be positive")
-        if len(train_dataset) > max_n:
-            train_dataset = train_dataset.shuffle(seed=int(args.seed)).select(range(max_n))
-        print(f"Train dataset ограничен до: {len(train_dataset)}")
+    N = len(full_train_dataset)
+    max_n = int(args.max_train_samples) if args.max_train_samples is not None else None
+
+    if max_n is not None and max_n <= 0:
+        raise ValueError("--max-train-samples must be positive")
+
+    if args.resume.strip():
+        # Следующий чанк: [samples_done : samples_done + max_train_samples]
+        if max_n is None:
+            raise ValueError("при --resume укажите --max-train-samples")
+        start = samples_done
+        end = min(samples_done + max_n, N)
+        if start >= N:
+            print("Уже обучено на всех сэмплах. Выход.")
+            return
+        if start >= end:
+            print("Нет новых сэмплов для этого чанка. Выход.")
+            return
+        train_dataset = full_train_dataset.select(range(start, end))
+        print(f"Чанк для этого запуска: сэмплы {start}–{end} (всего {len(train_dataset)})")
+    elif max_n is not None:
+        # Первый запуск в режиме по чанкам: первые max_n сэмплов
+        train_dataset = full_train_dataset.select(range(0, min(max_n, N)))
+        print(f"Train dataset (первый чанк): {len(train_dataset)} сэмплов")
+    else:
+        train_dataset = full_train_dataset
+        print(f"Train dataset: {len(train_dataset)} сэмплов")
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
 
-    # Базовая директория + поддиректория с таймстемпом
     base_output_dir = Path(args.output_dir)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = base_output_dir / timestamp
+    if args.resume.strip():
+        output_dir = Path(args.resume.strip())
+    elif max_n is not None:
+        output_dir = base_output_dir
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = base_output_dir / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     training_args = SentenceTransformerTrainingArguments(
@@ -277,7 +280,12 @@ def main() -> None:
 
     trainer.train()
     trainer.save_model(str(output_dir))
-    print(f"Model saved to: {output_dir}")
+    final_samples_done = samples_done + len(train_dataset)
+    (output_dir / "training_state.json").write_text(
+        json.dumps({"samples_done": final_samples_done}, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Model saved to: {output_dir}, samples_done={final_samples_done}")
 
     original_metrics = evaluate_on_test(args.base_model)
     finetuned_metrics = evaluate_on_test(str(output_dir))
@@ -304,6 +312,7 @@ def main() -> None:
             "learning_rate": args.learning_rate,
             "warmup_ratio": args.warmup_ratio,
             "max_train_samples": args.max_train_samples,
+            "samples_done": final_samples_done,
             "seed": args.seed,
         },
     }

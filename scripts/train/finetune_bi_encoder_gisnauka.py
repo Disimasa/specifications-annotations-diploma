@@ -9,6 +9,11 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import torch
 from sentence_transformers import InputExample, SentenceTransformer, losses
 
+# первый раз
+# python scripts/train/finetune_bi_encoder_gisnauka.py --output-dir models/bi-encoder-gisnauka-200k --max-steps 40000
+# последующие разы
+# python scripts/train/finetune_bi_encoder_gisnauka.py --resume models/bi-encoder-gisnauka-200k --output-dir models/bi-encoder-gisnauka-200k --max-steps 40000
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = PROJECT_DIR / "src"
@@ -511,8 +516,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-model", type=str, default=BASE_MODEL)
+    parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to continue training from (overrides --base-model)")
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--max-steps", type=int, default=None, help="If set, train at most this many steps then save and exit (for multi-session runs)")
+    parser.add_argument("--max-train-samples", type=int, default=None, help="If set, train at most this many samples per run then save and exit (for multi-session runs; use with --resume to cover all data)")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--early-stop-patience", type=int, default=1)
@@ -522,7 +530,20 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    model = SentenceTransformer(args.base_model, device=device)
+    steps_done = 0
+    samples_done = 0
+    if args.resume.strip():
+        resume_path = Path(args.resume.strip())
+        model = SentenceTransformer(str(resume_path), device=device)
+        print(f"Resumed from: {args.resume}")
+        state_path = resume_path / "training_state.json"
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            steps_done = int(state.get("steps_done", 0))
+            samples_done = int(state.get("samples_done", 0))
+            print(f"Resuming from step {steps_done}, samples {samples_done} (next run will continue with the following data)")
+    else:
+        model = SentenceTransformer(args.base_model, device=device)
 
     code_to_text = load_ontology_texts(ONTOLOGY_PATH)
     train_examples, train_doc_ids = build_train_pairs_from_segments(code_to_text)
@@ -557,9 +578,22 @@ def main() -> None:
 
     train_dataloader = _BatchIterator(train_examples, batch_sampler)
 
-    total_steps = len(train_dataloader) * int(args.epochs)
-    warmup_steps = max(10, int(0.1 * total_steps))
-    print(f"Total steps: {total_steps}, warmup steps: {warmup_steps}")
+    steps_per_epoch = len(train_dataloader)
+    total_steps = steps_per_epoch * int(args.epochs)
+    max_steps_this_run = None
+    max_train_samples_this_run = None
+    if args.max_train_samples is not None and args.max_train_samples > 0:
+        max_train_samples_this_run = int(args.max_train_samples)
+        # Оценка шагов для шедулера (батчи разного размера)
+        est_steps_this_run = (max_train_samples_this_run + int(args.batch_size) - 1) // int(args.batch_size)
+        total_steps = min(total_steps, steps_done + est_steps_this_run)
+    if args.max_steps is not None and args.max_steps > 0:
+        max_steps_this_run = int(args.max_steps)
+        total_steps = min(total_steps, steps_done + max_steps_this_run)
+    warmup_steps = max(10, int(0.1 * (total_steps or 1)))
+    print(f"Steps per epoch: {steps_per_epoch}, steps_done: {steps_done}, samples_done: {samples_done}, total steps (this run): {total_steps}, warmup steps: {warmup_steps}")
+    if max_train_samples_this_run is not None:
+        print(f"Max train samples this run: {max_train_samples_this_run}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -580,14 +614,51 @@ def main() -> None:
         num_training_steps=total_steps,
     )
 
-    for epoch in range(1, int(args.epochs) + 1):
+    global_step = steps_done
+    samples_this_run = 0
+    stop_requested = False
+    for _ in range(steps_done):
+        scheduler.step()
+
+    def _skip_batches(dl, n: int):
+        it = iter(dl)
+        skipped = 0
+        while skipped < n:
+            try:
+                next(it)
+                skipped += 1
+            except StopIteration:
+                it = iter(dl)
+        return it
+
+    def _skip_until_samples(dl, target: int):
+        it = iter(dl)
+        total_skipped = 0
+        while total_skipped < target:
+            try:
+                batch = next(it)
+                total_skipped += len(batch)
+            except StopIteration:
+                it = iter(dl)
+        return it
+
+    if max_train_samples_this_run is not None and samples_done > 0:
+        train_iter = _skip_until_samples(train_dataloader, samples_done)
+    elif steps_done > 0:
+        train_iter = _skip_batches(train_dataloader, steps_done)
+    else:
+        train_iter = iter(train_dataloader)
+    epoch = 1
+    while epoch <= int(args.epochs) and not stop_requested:
         model.train()
         epoch_loss = 0.0
-        for step, batch in enumerate(train_dataloader, start=1):
-            # smart_batching_collate в этой версии возвращает (sentence_features, labels)
+        epoch_steps = 0
+        while True:
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                break
             sentence_features, labels = model.smart_batching_collate(batch)
-
-            # Перенос признаков на нужное устройство
             for sent_feat in sentence_features:
                 for k, v in list(sent_feat.items()):
                     if isinstance(v, torch.Tensor):
@@ -595,15 +666,24 @@ def main() -> None:
 
             loss_value = train_loss(sentence_features, labels)
             loss_value.backward()
-
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
             epoch_loss += float(loss_value.detach().cpu())
+            epoch_steps += 1
+            global_step += 1
+            batch_samples = len(batch)
+            samples_this_run += batch_samples
+            if max_train_samples_this_run is not None and samples_this_run >= max_train_samples_this_run:
+                stop_requested = True
+                break
+            if max_steps_this_run is not None and global_step >= steps_done + max_steps_this_run:
+                stop_requested = True
+                break
 
-        print(f"Epoch {epoch} train loss: {epoch_loss / max(1, len(train_dataloader)):.4f}")
+        print(f"Epoch {epoch} train loss: {epoch_loss / max(1, epoch_steps):.4f}")
 
         valid_metrics = evaluate_encoder_on_segmented_csv(
             model,
@@ -624,8 +704,21 @@ def main() -> None:
             if bad_epochs > int(args.early_stop_patience):
                 print(f"Early stopping at epoch {epoch}. Best epoch={best_epoch} R@20={best_r20:.4f}")
                 break
+        if stop_requested:
+            if max_train_samples_this_run is not None:
+                print(f"Reached max_train_samples={max_train_samples_this_run} (saw {samples_this_run} samples). Saving and exiting.")
+            else:
+                print(f"Reached max_steps={max_steps_this_run}. Saving and exiting.")
+            break
+        epoch += 1
+        train_iter = iter(train_dataloader)
 
     model.save(str(output_dir))
+    final_samples_done = samples_done + samples_this_run
+    (output_dir / "training_state.json").write_text(
+        json.dumps({"steps_done": global_step, "samples_done": final_samples_done}, indent=2),
+        encoding="utf-8",
+    )
     print(f"Model saved to: {output_dir}")
     if best_dir.exists():
         print(f"Best checkpoint: {best_dir}")
@@ -651,6 +744,10 @@ def main() -> None:
             "base_model": args.base_model,
             "output_dir": str(output_dir),
             "epochs": args.epochs,
+            "max_steps": args.max_steps,
+            "max_train_samples": args.max_train_samples,
+            "steps_done": global_step,
+            "samples_done": final_samples_done,
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "early_stop_patience": args.early_stop_patience,
