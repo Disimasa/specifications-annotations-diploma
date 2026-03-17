@@ -11,6 +11,7 @@ from datasets import Dataset
 from sentence_transformers import InputExample, SentenceTransformer, losses
 from sentence_transformers import SentenceTransformerTrainer
 from sentence_transformers.training_args import SentenceTransformerTrainingArguments, BatchSamplers
+from transformers import TrainerCallback
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -113,6 +114,39 @@ def evaluate_on_test(model_ref: str) -> Dict[str, float]:
     }
 
 
+class SaveBestToDirCallback(TrainerCallback):
+    """При новом лучшем eval_loss сохраняет модель в output_dir/best. В корне остаётся последняя."""
+
+    def __init__(self, best_dir: Path, metric: str = "eval_loss", greater_is_better: bool = False):
+        self.best_dir = Path(best_dir)
+        self.metric = metric
+        self.greater_is_better = greater_is_better
+        self.best_value = None
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if metrics is None or self.metric not in metrics:
+            return control
+        value = metrics[self.metric]
+        if isinstance(value, str):
+            try:
+                value = float(value)
+            except ValueError:
+                return control
+        is_better = (
+            self.best_value is None
+            or (self.greater_is_better and value > self.best_value)
+            or (not self.greater_is_better and value < self.best_value)
+        )
+        if is_better:
+            self.best_value = value
+            trainer = getattr(self, "trainer", None)
+            if trainer is not None and state.is_world_process_zero:
+                self.best_dir.mkdir(parents=True, exist_ok=True)
+                trainer.save_model(str(self.best_dir))
+                print(f"  [best] {self.metric}={value:.4f} -> {self.best_dir}")
+        return control
+
+
 def build_pairs_from_segments(
     segments_csv: Path,
     code_to_text: Dict[str, str],
@@ -162,14 +196,21 @@ def main() -> None:
     parser.add_argument("--resume", type=str, default="", help="Путь к чекпоинту для продолжения обучения (режим по сэмплам с --max-train-samples)")
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=32, help="Размер батча; с CachedMultipleNegativesRankingLoss можно ставить 64–128 и выше")
+    parser.add_argument("--mini-batch-size", type=int, default=32, help="Мини-батч для cached loss (память под один forward)")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument(
         "--max-train-samples",
         type=int,
         default=None,
-        help="Макс. сэмплов за один запуск; с --resume следующий чанк без дублей (обучение на всех данных по частям).",
+        help="Макс. сэмплов за один запуск; с --resume следующий чанк (режим по чанкам). Без него — обучение на всех данных с чекпоинтами по шагам.",
+    )
+    parser.add_argument(
+        "--save-steps",
+        type=int,
+        default=500,
+        help="Сохранять чекпоинт каждые N шагов (при обучении на всех данных). По умолчанию 500.",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -177,9 +218,31 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
+    base_output_dir = Path(args.output_dir)
+    resume_path = Path(args.resume.strip()) if args.resume.strip() else None
+    # Есть ли чекпоинты Trainer (checkpoint-1000 и т.д.) для возобновления с шага
+    checkpoint_dirs = []
+    if resume_path and resume_path.is_dir():
+        for p in resume_path.iterdir():
+            if p.is_dir() and p.name.startswith("checkpoint-"):
+                try:
+                    step = int(p.name.split("-")[1])
+                    checkpoint_dirs.append((step, p))
+                except (IndexError, ValueError):
+                    pass
+        checkpoint_dirs.sort(key=lambda x: x[0])
+    resume_from_checkpoint = None
+    if checkpoint_dirs:
+        resume_from_checkpoint = str(checkpoint_dirs[-1][1])
+        print(f"Найден чекпоинт: {resume_from_checkpoint}, продолжение с этого шага")
+
     samples_done = 0
-    if args.resume.strip():
-        resume_path = Path(args.resume.strip())
+    use_chunked = args.max_train_samples is not None and args.max_train_samples > 0
+
+    if resume_from_checkpoint:
+        model = SentenceTransformer(resume_from_checkpoint, device=device)
+        print("Модель загружена из чекпоинта, обучение продолжится с этого шага")
+    elif args.resume.strip() and use_chunked:
         model = SentenceTransformer(str(resume_path), device=device)
         print(f"Resumed from: {args.resume}")
         state_path = resume_path / "training_state.json"
@@ -187,6 +250,10 @@ def main() -> None:
             state = json.loads(state_path.read_text(encoding="utf-8"))
             samples_done = int(state.get("samples_done", 0))
             print(f"Resuming from samples_done={samples_done} (следующий чанк)")
+    elif args.resume.strip():
+        model = SentenceTransformer(str(resume_path), device=device)
+        print(f"Resumed from: {args.resume}")
+        print("В каталоге нет чекпоинтов (checkpoint-*). Обучение начнётся с шага 0 (полные эпохи).")
     else:
         model = SentenceTransformer(args.base_model, device=device)
 
@@ -216,10 +283,11 @@ def main() -> None:
     if max_n is not None and max_n <= 0:
         raise ValueError("--max-train-samples must be positive")
 
-    if args.resume.strip():
-        # Следующий чанк: [samples_done : samples_done + max_train_samples]
-        if max_n is None:
-            raise ValueError("при --resume укажите --max-train-samples")
+    # Режим "полные данные + чекпоинты по шагам" или "по чанкам"
+    if resume_from_checkpoint:
+        train_dataset = full_train_dataset
+        print(f"Train dataset: {len(train_dataset)} сэмплов (продолжение с чекпоинта)")
+    elif args.resume.strip() and use_chunked:
         start = samples_done
         end = min(samples_done + max_n, N)
         if start >= N:
@@ -231,25 +299,28 @@ def main() -> None:
         train_dataset = full_train_dataset.select(range(start, end))
         print(f"Чанк для этого запуска: сэмплы {start}–{end} (всего {len(train_dataset)})")
     elif max_n is not None:
-        # Первый запуск в режиме по чанкам: первые max_n сэмплов
         train_dataset = full_train_dataset.select(range(0, min(max_n, N)))
         print(f"Train dataset (первый чанк): {len(train_dataset)} сэмплов")
     else:
         train_dataset = full_train_dataset
-        print(f"Train dataset: {len(train_dataset)} сэмплов")
+        print(f"Train dataset: {len(train_dataset)} сэмплов (чекпоинты каждые {args.save_steps} шагов)")
 
-    train_loss = losses.MultipleNegativesRankingLoss(model)
+    # CachedMultipleNegativesRankingLoss: эмбеддинги считаются мини-батчами (mini_batch_size),
+    # in-batch negatives — из всего батча; можно ставить больший --batch-size без OOM.
+    train_loss = losses.CachedMultipleNegativesRankingLoss(
+        model,
+        mini_batch_size=int(args.mini_batch_size),
+        show_progress_bar=False,
+    )
 
-    base_output_dir = Path(args.output_dir)
-    if args.resume.strip():
-        output_dir = Path(args.resume.strip())
-    elif max_n is not None:
-        output_dir = base_output_dir
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = base_output_dir / timestamp
+    # ВАЖНО: --resume отвечает ТОЛЬКО за откуда продолжать.
+    # --output-dir отвечает ТОЛЬКО за куда сохранять.
+    # Раньше при --resume мы писали в resume_path и могли перезаписать исходную модель.
+    output_dir = base_output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    use_save_steps = not use_chunked  # полные данные — сохраняем по шагам
+    save_steps_val = int(args.save_steps) if use_save_steps else 500
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=int(args.epochs),
@@ -259,10 +330,12 @@ def main() -> None:
         warmup_ratio=float(args.warmup_ratio),
         seed=int(args.seed),
         logging_steps=50,
-        save_strategy="epoch",
+        save_strategy="steps" if use_save_steps else "epoch",
+        save_steps=save_steps_val,
         save_total_limit=2,
-        eval_strategy="epoch",
-        load_best_model_at_end=True,
+        eval_strategy="steps" if use_save_steps else "epoch",
+        eval_steps=save_steps_val if use_save_steps else None,
+        load_best_model_at_end=False,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         dataloader_num_workers=2,
@@ -270,22 +343,32 @@ def main() -> None:
         remove_unused_columns=False,
     )
 
+    best_dir = output_dir / "best"
+    save_best_cb = SaveBestToDirCallback(
+        best_dir, metric="eval_loss", greater_is_better=False
+    )
     trainer = SentenceTransformerTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         loss=train_loss,
+        callbacks=[save_best_cb],
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(str(output_dir))
-    final_samples_done = samples_done + len(train_dataset)
-    (output_dir / "training_state.json").write_text(
-        json.dumps({"samples_done": final_samples_done}, indent=2),
-        encoding="utf-8",
-    )
-    print(f"Model saved to: {output_dir}, samples_done={final_samples_done}")
+    final_samples_done = samples_done + len(train_dataset) if use_chunked else None
+    if use_chunked:
+        (output_dir / "training_state.json").write_text(
+            json.dumps({"samples_done": final_samples_done}, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Model saved to: {output_dir}, samples_done={final_samples_done}")
+    else:
+        print(f"Model saved to: {output_dir}")
+    if best_dir.exists():
+        print(f"Best checkpoint (по eval_loss): {best_dir}")
 
     original_metrics = evaluate_on_test(args.base_model)
     finetuned_metrics = evaluate_on_test(str(output_dir))
@@ -311,6 +394,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "warmup_ratio": args.warmup_ratio,
+            "save_steps": args.save_steps,
             "max_train_samples": args.max_train_samples,
             "samples_done": final_samples_done,
             "seed": args.seed,

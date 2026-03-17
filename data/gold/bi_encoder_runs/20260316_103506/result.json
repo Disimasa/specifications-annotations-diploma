@@ -1,0 +1,23 @@
+{
+  "original_metrics": {
+    "R@20": 0.29100529100529093,
+    "P@20": 0.0492063492063492
+  },
+  "finetuned_metrics": {
+    "R@20": 0.5121693121693122,
+    "P@20": 0.08333333333333331
+  },
+  "params": {
+    "base_model": "deepvk/USER-bge-m3",
+    "output_dir": "models\\bi-encoder-gisnauka-full-64",
+    "base_output_dir": "models\\bi-encoder-gisnauka-full-64",
+    "epochs": 1,
+    "batch_size": 128,
+    "learning_rate": 1e-05,
+    "warmup_ratio": 0.1,
+    "save_steps": 500,
+    "max_train_samples": null,
+    "samples_done": null,
+    "seed": 42
+  }
+}
