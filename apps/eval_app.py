@@ -153,6 +153,9 @@ def evaluate(
     agg_leaf: Dict[int, Dict[str, List[float]]] = {k: {"p": [], "r": [], "mrr": [], "ap": []} for k in eval_ks}
     agg_parent: Dict[int, Dict[str, List[float]]] = {k: {"p": [], "r": [], "mrr": [], "ap": []} for k in eval_ks}
     agg_grand: Dict[int, Dict[str, List[float]]] = {k: {"p": [], "r": [], "mrr": [], "ap": []} for k in eval_ks}
+    agg_leaf_m: Dict[str, List[float]] = {"p": [], "r": []}
+    agg_parent_m: Dict[str, List[float]] = {"p": [], "r": []}
+    agg_grand_m: Dict[str, List[float]] = {"p": [], "r": []}
 
     total_docs = len(items)
     progress_bar = st.progress(0) if total_docs else None
@@ -197,6 +200,12 @@ def evaluate(
             agg_leaf[k]["r"].append(r)
             agg_leaf[k]["mrr"].append(mrr)
             agg_leaf[k]["ap"].append(ap)
+        m_leaf = len(it.gold_codes)
+        if m_leaf > 0:
+            doc_metrics["P@M"] = precision_at_k(pred_codes, it.gold_codes, m_leaf)
+            doc_metrics["R@M"] = recall_at_k(pred_codes, it.gold_codes, m_leaf)
+            agg_leaf_m["p"].append(doc_metrics["P@M"])
+            agg_leaf_m["r"].append(doc_metrics["R@M"])
 
         gold_parent = aggregate_codes_to_level(it.gold_codes, 2)
         pred_parent = aggregate_codes_to_level(pred_codes, 2)
@@ -234,6 +243,18 @@ def evaluate(
             agg_grand[k]["r"].append(r)
             agg_grand[k]["mrr"].append(mrr)
             agg_grand[k]["ap"].append(ap)
+        m_parent = len(gold_parent)
+        if m_parent > 0:
+            doc_metrics_parent["P@M"] = precision_at_k(pred_parent, gold_parent, m_parent)
+            doc_metrics_parent["R@M"] = recall_at_k(pred_parent, gold_parent, m_parent)
+            agg_parent_m["p"].append(doc_metrics_parent["P@M"])
+            agg_parent_m["r"].append(doc_metrics_parent["R@M"])
+        m_grand = len(gold_grand)
+        if m_grand > 0:
+            doc_metrics_grand["P@M"] = precision_at_k(pred_grand, gold_grand, m_grand)
+            doc_metrics_grand["R@M"] = recall_at_k(pred_grand, gold_grand, m_grand)
+            agg_grand_m["p"].append(doc_metrics_grand["P@M"])
+            agg_grand_m["r"].append(doc_metrics_grand["R@M"])
 
         per_doc.append(
             {
@@ -255,6 +276,9 @@ def evaluate(
                 f"MRR@{k}": mean(agg_leaf[k]["mrr"]) for k in eval_ks
             } | {
                 f"MAP@{k}": mean(agg_leaf[k]["ap"]) for k in eval_ks
+            } | {
+                "P@M": mean(agg_leaf_m["p"]),
+                "R@M": mean(agg_leaf_m["r"]),
             }
 
     macro_parent = {
@@ -265,6 +289,9 @@ def evaluate(
                        f"MRR@{k}": mean(agg_parent[k]["mrr"]) for k in eval_ks
                    } | {
                        f"MAP@{k}": mean(agg_parent[k]["ap"]) for k in eval_ks
+                   } | {
+                       "P@M": mean(agg_parent_m["p"]),
+                       "R@M": mean(agg_parent_m["r"]),
                    }
 
     macro_grand = {
@@ -275,6 +302,9 @@ def evaluate(
                       f"MRR@{k}": mean(agg_grand[k]["mrr"]) for k in eval_ks
                   } | {
                       f"MAP@{k}": mean(agg_grand[k]["ap"]) for k in eval_ks
+                  } | {
+                      "P@M": mean(agg_grand_m["p"]),
+                      "R@M": mean(agg_grand_m["r"]),
                   }
 
     emb_path_used = getattr(annotator, "precomputed_embeddings_path", None)
@@ -471,12 +501,21 @@ def main() -> None:
         st.caption("Эмбеддинги онтологии вычисляются онлайн.")
 
     st.subheader("Листовой уровень (XX.YY.ZZ)")
+    c1, c2 = st.columns(2)
+    c1.metric("R@M", f"{summary['macro'].get('R@M', 0.0):.4f}")
+    c2.metric("P@M", f"{summary['macro'].get('P@M', 0.0):.4f}")
     st.dataframe(_macro_to_table(summary["macro"], eval_ks), use_container_width=True)
 
     st.subheader("Родители (2‑й уровень, XX.YY)")
+    c1, c2 = st.columns(2)
+    c1.metric("R@M", f"{summary['macro_parent'].get('R@M', 0.0):.4f}")
+    c2.metric("P@M", f"{summary['macro_parent'].get('P@M', 0.0):.4f}")
     st.dataframe(_macro_to_table(summary["macro_parent"], eval_ks), use_container_width=True)
 
     st.subheader("Grandparent (1‑й уровень, XX)")
+    c1, c2 = st.columns(2)
+    c1.metric("R@M", f"{summary['macro_grandparent'].get('R@M', 0.0):.4f}")
+    c2.metric("P@M", f"{summary['macro_grandparent'].get('P@M', 0.0):.4f}")
     st.dataframe(_macro_to_table(summary["macro_grandparent"], eval_ks), use_container_width=True)
 
 

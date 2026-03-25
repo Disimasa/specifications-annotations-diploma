@@ -1,0 +1,40 @@
+{
+  "original_metrics": {
+    "R@20": 0.29100529100529093,
+    "P@20": 0.0492063492063492,
+    "R@20_parent": 0.5624338624338625
+  },
+  "finetuned_metrics": {
+    "R@20": 0.5134920634920634,
+    "P@20": 0.08333333333333331,
+    "R@20_parent": 0.6534391534391535
+  },
+  "skip_baseline_test": false,
+  "result_path": "C:\\Projects\\university\\mag\\2_course\\1 sem\\diploma\\data\\gold\\bi_encoder_runs\\20260325_083205\\result.json",
+  "params": {
+    "base_model": "deepvk/USER-bge-m3",
+    "output_dir": "models\\bi-encoder-full-128-batcher",
+    "epochs": 1,
+    "batch_size": 128,
+    "learning_rate": 1e-05,
+    "warmup_ratio": 0.1,
+    "save_steps": 500,
+    "max_train_samples": null,
+    "samples_done": null,
+    "seed": 42,
+    "use_hierarchical_sampler": false,
+    "loss": "cached_mnr",
+    "guide_model": "deepvk/USER-bge-m3",
+    "disable_guide_safe_hard": false,
+    "gist_relative_margin": 0.05,
+    "curriculum_epoch1": "0.8,0.2,0",
+    "curriculum_epoch2": "0.6,0.3,0.1",
+    "curriculum_epoch3plus": "0.45,0.35,0.2",
+    "leaf_balance_power": 0.5,
+    "grand_balance_weight": 1.0,
+    "max_scored_candidates": 256,
+    "precomputed_batches": "data\\gold\\precomputed_batches\\hb_gisnauka_segments_train_augmented_bs128_ep1_seed42_m0.05_guide-user-bge-m3_c1-0-0-1_c2-0.6-0.3-0.1_c3-0.45-0.35-0.2_54435d722b.pt",
+    "dataloader_drop_last": false,
+    "skip_baseline_test": false
+  }
+}

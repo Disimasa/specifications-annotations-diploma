@@ -1,0 +1,36 @@
+{
+  "original_metrics": {},
+  "finetuned_metrics": {
+    "R@20": 0.45079365079365075,
+    "P@20": 0.07539682539682538,
+    "R@20_parent": 0.621164021164021
+  },
+  "skip_baseline_test": true,
+  "result_path": "C:\\Projects\\university\\mag\\2_course\\1 sem\\diploma\\data\\gold\\bi_encoder_runs\\20260322_082229\\result.json",
+  "params": {
+    "base_model": "deepvk/USER-bge-m3",
+    "output_dir": "C:\\Projects\\university\\mag\\2_course\\1 sem\\diploma\\models\\playground-batcher-quality-optuna\\trial_009",
+    "epochs": 1,
+    "batch_size": 128,
+    "learning_rate": 1e-05,
+    "warmup_ratio": 0.1,
+    "save_steps": 500,
+    "max_train_samples": 10000,
+    "samples_done": 10000,
+    "seed": 42,
+    "use_hierarchical_sampler": true,
+    "loss": "cached_mnr",
+    "guide_model": "deepvk/USER-bge-m3",
+    "disable_guide_safe_hard": true,
+    "gist_relative_margin": 0.05,
+    "curriculum_epoch1": "0,0,1",
+    "curriculum_epoch2": "0.6,0.3,0.1",
+    "curriculum_epoch3plus": "0.45,0.35,0.2",
+    "leaf_balance_power": 1.0,
+    "grand_balance_weight": 1.0,
+    "max_scored_candidates": 128,
+    "precomputed_batches": null,
+    "dataloader_drop_last": false,
+    "skip_baseline_test": true
+  }
+}

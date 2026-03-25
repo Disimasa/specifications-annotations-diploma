@@ -102,6 +102,8 @@ def evaluate_doc_level(
     recalls: List[float] = []
     precisions: List[float] = []
     mrrs: List[float] = []
+    recalls_m: List[float] = []
+    precisions_m: List[float] = []
     for item in tqdm(items, desc=desc, unit="doc"):
         gold = get_gold_fn(item)
         if not gold:
@@ -122,13 +124,25 @@ def evaluate_doc_level(
         recalls.append(recall_at_k(pred_codes, gold, k))
         precisions.append(precision_at_k(pred_codes, gold, k))
         mrrs.append(mrr_at_k(pred_codes, gold, k))
+        m = len(gold)
+        recalls_m.append(recall_at_k(pred_codes, gold, m))
+        precisions_m.append(precision_at_k(pred_codes, gold, m))
     n = len(recalls)
     if n == 0:
-        return {f"R@{k}": 0.0, f"P@{k}": 0.0, f"MRR@{k}": 0.0, "n": 0}
+        return {
+            f"R@{k}": 0.0,
+            f"P@{k}": 0.0,
+            f"MRR@{k}": 0.0,
+            "R@M": 0.0,
+            "P@M": 0.0,
+            "n": 0,
+        }
     return {
         f"R@{k}": sum(recalls) / n,
         f"P@{k}": sum(precisions) / n,
         f"MRR@{k}": sum(mrrs) / n,
+        "R@M": sum(recalls_m) / n,
+        "P@M": sum(precisions_m) / n,
         "n": n,
     }
 
@@ -151,6 +165,8 @@ def evaluate_dataset(
     recalls: List[float] = []
     precisions: List[float] = []
     mrrs: List[float] = []
+    recalls_m: List[float] = []
+    precisions_m: List[float] = []
     skipped = 0
     for item in tqdm(items, desc=name, unit="doc"):
         gold = get_gold_fn(item)
@@ -175,13 +191,26 @@ def evaluate_dataset(
         recalls.append(recall_at_k(pred, gold, k))
         precisions.append(precision_at_k(pred, gold, k))
         mrrs.append(mrr_at_k(pred, gold, k))
+        m = len(gold)
+        recalls_m.append(recall_at_k(pred, gold, m))
+        precisions_m.append(precision_at_k(pred, gold, m))
     n = len(recalls)
     if n == 0:
-        return {f"R@{k}": 0.0, f"P@{k}": 0.0, f"MRR@{k}": 0.0, "n": 0, "skipped": skipped}
+        return {
+            f"R@{k}": 0.0,
+            f"P@{k}": 0.0,
+            f"MRR@{k}": 0.0,
+            "R@M": 0.0,
+            "P@M": 0.0,
+            "n": 0,
+            "skipped": skipped,
+        }
     return {
         f"R@{k}": sum(recalls) / n,
         f"P@{k}": sum(precisions) / n,
         f"MRR@{k}": sum(mrrs) / n,
+        "R@M": sum(recalls_m) / n,
+        "P@M": sum(precisions_m) / n,
         "n": n,
         "skipped": skipped,
     }
@@ -274,7 +303,10 @@ def main() -> None:
             )
             results["test_gisnauka"] = res
             print(f"\n--- Test gisnauka (полный пайплайн): n={res['n']}, skipped={res.get('skipped', 0)} ---")
-            print(f"  R@{k}: {res[f'R@{k}']:.4f}  P@{k}: {res[f'P@{k}']:.4f}  MRR@{k}: {res[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {res[f'R@{k}']:.4f}  P@{k}: {res[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {res[f'MRR@{k}']:.4f}  R@M: {res['R@M']:.4f}  P@M: {res['P@M']:.4f}"
+            )
         if items_csv:
             doc_level = evaluate_doc_level(
                 annotator.model,
@@ -288,7 +320,10 @@ def main() -> None:
             )
             results["test_gisnauka_doc_level"] = doc_level
             print(f"--- Test gisnauka (document-level): n={doc_level['n']} ---")
-            print(f"  R@{k}: {doc_level[f'R@{k}']:.4f}  P@{k}: {doc_level[f'P@{k}']:.4f}  MRR@{k}: {doc_level[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {doc_level[f'R@{k}']:.4f}  P@{k}: {doc_level[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {doc_level[f'MRR@{k}']:.4f}  R@M: {doc_level['R@M']:.4f}  P@M: {doc_level['P@M']:.4f}"
+            )
     else:
         print(f"Test CSV not found: {args.test_csv}, skip.")
 
@@ -313,7 +348,10 @@ def main() -> None:
             )
             results["test_gisnauka_docs"] = res_docs
             print(f"\n--- Test gisnauka docs (полный пайплайн): n={res_docs['n']}, skipped={res_docs.get('skipped', 0)} ---")
-            print(f"  R@{k}: {res_docs[f'R@{k}']:.4f}  P@{k}: {res_docs[f'P@{k}']:.4f}  MRR@{k}: {res_docs[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {res_docs[f'R@{k}']:.4f}  P@{k}: {res_docs[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {res_docs[f'MRR@{k}']:.4f}  R@M: {res_docs['R@M']:.4f}  P@M: {res_docs['P@M']:.4f}"
+            )
 
         if items_docs:
             doc_level_docs = evaluate_doc_level(
@@ -328,7 +366,10 @@ def main() -> None:
             )
             results["test_gisnauka_docs_doc_level"] = doc_level_docs
             print(f"--- Test gisnauka docs (document-level): n={doc_level_docs['n']} ---")
-            print(f"  R@{k}: {doc_level_docs[f'R@{k}']:.4f}  P@{k}: {doc_level_docs[f'P@{k}']:.4f}  MRR@{k}: {doc_level_docs[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {doc_level_docs[f'R@{k}']:.4f}  P@{k}: {doc_level_docs[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {doc_level_docs[f'MRR@{k}']:.4f}  R@M: {doc_level_docs['R@M']:.4f}  P@M: {doc_level_docs['P@M']:.4f}"
+            )
     else:
         print(f"Test docs CSV not found: {args.test_docs_csv}, skip.")
 
@@ -360,7 +401,10 @@ def main() -> None:
             )
             results["gold_jsonl"] = res
             print(f"\n--- Gold JSONL (полный пайплайн): n={res['n']}, skipped={res.get('skipped', 0)} ---")
-            print(f"  R@{k}: {res[f'R@{k}']:.4f}  P@{k}: {res[f'P@{k}']:.4f}  MRR@{k}: {res[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {res[f'R@{k}']:.4f}  P@{k}: {res[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {res[f'MRR@{k}']:.4f}  R@M: {res['R@M']:.4f}  P@M: {res['P@M']:.4f}"
+            )
         doc_level_j = evaluate_doc_level(
             annotator.model,
             code_embs,
@@ -373,7 +417,10 @@ def main() -> None:
         )
         results["gold_jsonl_doc_level"] = doc_level_j
         print(f"--- Gold JSONL (document-level): n={doc_level_j['n']} ---")
-        print(f"  R@{k}: {doc_level_j[f'R@{k}']:.4f}  P@{k}: {doc_level_j[f'P@{k}']:.4f}  MRR@{k}: {doc_level_j[f'MRR@{k}']:.4f}")
+        print(
+            f"  R@{k}: {doc_level_j[f'R@{k}']:.4f}  P@{k}: {doc_level_j[f'P@{k}']:.4f}  "
+            f"MRR@{k}: {doc_level_j[f'MRR@{k}']:.4f}  R@M: {doc_level_j['R@M']:.4f}  P@M: {doc_level_j['P@M']:.4f}"
+        )
     else:
         print(f"Gold JSONL not found: {args.gold_jsonl}, skip.")
 
@@ -397,7 +444,10 @@ def main() -> None:
             )
             results["valid"] = res_v
             print(f"\n--- Valid (полный пайплайн): n={res_v['n']}, skipped={res_v.get('skipped', 0)} ---")
-            print(f"  R@{k}: {res_v[f'R@{k}']:.4f}  P@{k}: {res_v[f'P@{k}']:.4f}  MRR@{k}: {res_v[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {res_v[f'R@{k}']:.4f}  P@{k}: {res_v[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {res_v[f'MRR@{k}']:.4f}  R@M: {res_v['R@M']:.4f}  P@M: {res_v['P@M']:.4f}"
+            )
         if items_valid:
             doc_level_v = evaluate_doc_level(
                 annotator.model,
@@ -411,13 +461,20 @@ def main() -> None:
             )
             results["valid_doc_level"] = doc_level_v
             print(f"--- Valid (document-level): n={doc_level_v['n']} ---")
-            print(f"  R@{k}: {doc_level_v[f'R@{k}']:.4f}  P@{k}: {doc_level_v[f'P@{k}']:.4f}  MRR@{k}: {doc_level_v[f'MRR@{k}']:.4f}")
+            print(
+                f"  R@{k}: {doc_level_v[f'R@{k}']:.4f}  P@{k}: {doc_level_v[f'P@{k}']:.4f}  "
+                f"MRR@{k}: {doc_level_v[f'MRR@{k}']:.4f}  R@M: {doc_level_v['R@M']:.4f}  P@M: {doc_level_v['P@M']:.4f}"
+            )
     else:
         print(f"Valid CSV not found: {args.valid_csv}, skip.")
 
     print("\n--- Summary ---")
     for key, res in results.items():
-        print(f"  {key}: R@{k}={res.get(f'R@{k}', 0):.4f}  P@{k}={res.get(f'P@{k}', 0):.4f}  MRR@{k}={res.get(f'MRR@{k}', 0):.4f}  n={res.get('n', 0)}")
+        print(
+            f"  {key}: R@{k}={res.get(f'R@{k}', 0):.4f}  P@{k}={res.get(f'P@{k}', 0):.4f}  "
+            f"MRR@{k}={res.get(f'MRR@{k}', 0):.4f}  R@M={res.get('R@M', 0):.4f}  "
+            f"P@M={res.get('P@M', 0):.4f}  n={res.get('n', 0)}"
+        )
 
 
 if __name__ == "__main__":
