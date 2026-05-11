@@ -375,6 +375,8 @@ def build_hierarchical_rows_from_segments(
             continue
         gold_leaves = doc_to_leaves.get(doc_id, set())
         gold_str = ";".join(sorted(gold_leaves))
+        seg_raw = (row.get("segment_index") or "").strip()
+        segment_index: int | str = int(seg_raw) if seg_raw.isdigit() else (seg_raw or "")
         for code in codes:
             comp_text = code_to_text.get(code)
             if not comp_text:
@@ -385,6 +387,7 @@ def build_hierarchical_rows_from_segments(
                     "text1": segment_text,
                     "text2": comp_text,
                     "doc_id": doc_id,
+                    "segment_index": segment_index,
                     "leaf": code,
                     "parent": parent,
                     "grand": grand,
@@ -468,9 +471,21 @@ def main() -> None:
     parser.add_argument(
         "--loss",
         type=str,
-        choices=("gist", "cached_mnr"),
+        choices=("gist", "cached_mnr", "triplet"),
         default="cached_mnr",
-        help="gist: CachedGISTEmbedLoss + замороженный guide; cached_mnr: CachedMNR (с --use-hierarchical-sampler — safe-hard остаётся в sampler)",
+        help="gist: CachedGISTEmbedLoss; cached_mnr: CachedMNR; triplet: TripletLoss (нужен --triplets-jsonl)",
+    )
+    parser.add_argument(
+        "--triplets-jsonl",
+        type=str,
+        default="",
+        help="JSONL с полями anchor, positive, negative на строку (см. build_triplets_from_hard_negatives.py); только с --loss triplet",
+    )
+    parser.add_argument(
+        "--triplet-margin",
+        type=float,
+        default=0.15,
+        help="Margin для TripletLoss при distance_metric=COSINE (типично 0.05–0.3)",
     )
     parser.add_argument(
         "--guide-model",
@@ -552,6 +567,12 @@ def main() -> None:
         help="Не гонять тест на base_model (только finetuned → result.json). Удобно для Optuna / экономии времени",
     )
     parser.add_argument(
+        "--filter-fn-pair-frac-max",
+        type=float,
+        default=None,
+        help="Для --precomputed-batches: выкидывать батчи, где fn_pair_frac (false-negative ratio) > этого значения.",
+    )
+    parser.add_argument(
         "--debug-collator-meta-tokenization",
         action="store_true",
         help="Один раз печатает какие колонки кроме text1/text2 токенизируются collator'ом и уходят в loss.",
@@ -561,6 +582,7 @@ def main() -> None:
 
 def run_training(args) -> Dict[str, Any]:
     skip_baseline_test = bool(getattr(args, "skip_baseline_test", False))
+    filter_fn_pair_frac_max = getattr(args, "filter_fn_pair_frac_max", None)
     debug_collator_meta_tokenization = bool(getattr(args, "debug_collator_meta_tokenization", False))
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -605,10 +627,40 @@ def run_training(args) -> Dict[str, Any]:
 
     code_to_text = load_ontology_texts(ONTOLOGY_PATH)
     use_precomputed_batches = bool(args.precomputed_batches.strip())
+    use_triplets = bool(getattr(args, "triplets_jsonl", "").strip())
     if use_precomputed_batches and args.use_hierarchical_sampler:
         raise ValueError("Нельзя одновременно --precomputed-batches и --use-hierarchical-sampler")
+    if use_triplets and (use_precomputed_batches or args.use_hierarchical_sampler):
+        raise ValueError("Режим --triplets-jsonl несовместим с --precomputed-batches и --use-hierarchical-sampler")
+    if use_triplets and args.loss != "triplet":
+        raise ValueError("С --triplets-jsonl укажите --loss triplet")
+    if args.loss == "triplet" and not use_triplets:
+        raise ValueError("Для --loss triplet нужен непустой --triplets-jsonl")
 
-    if args.use_hierarchical_sampler or use_precomputed_batches:
+    if use_triplets:
+        trip_path = Path(args.triplets_jsonl.strip())
+        if not trip_path.is_file():
+            raise FileNotFoundError(f"--triplets-jsonl: {trip_path}")
+        trip_rows: List[Dict[str, Any]] = []
+        with trip_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                o = json.loads(line)
+                trip_rows.append(
+                    {
+                        "anchor": str(o.get("anchor") or ""),
+                        "positive": str(o.get("positive") or ""),
+                        "negative": str(o.get("negative") or ""),
+                    }
+                )
+        trip_rows = [r for r in trip_rows if r["anchor"] and r["positive"] and r["negative"]]
+        if not trip_rows:
+            raise RuntimeError("В --triplets-jsonl нет ни одной полной строки anchor/positive/negative")
+        print(f"Train triplets: {len(trip_rows)} (из {trip_path})")
+        full_train_dataset = Dataset.from_list(trip_rows).shuffle(seed=int(args.seed))
+    elif args.use_hierarchical_sampler or use_precomputed_batches:
         train_rows = build_hierarchical_rows_from_segments(TRAIN_SEGMENTS_CSV, code_to_text)
         if not train_rows:
             raise RuntimeError("no hierarchical training rows built")
@@ -624,11 +676,17 @@ def run_training(args) -> Dict[str, Any]:
             [{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in train_examples]
         ).shuffle(seed=int(args.seed))
 
-    valid_examples = build_pairs_from_segments(VALID_SEGMENTS_CSV, code_to_text)
-    if not valid_examples:
-        raise RuntimeError("no validation pairs built")
-    print(f"Valid pairs (из сегментов): {len(valid_examples)}")
-    valid_dataset = Dataset.from_list([{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in valid_examples])
+    if use_triplets:
+        valid_dataset = None
+        print("Triplet mode: валидация в тренере отключена (eval отдельно через evaluate_r20_full_pipeline).")
+    else:
+        valid_examples = build_pairs_from_segments(VALID_SEGMENTS_CSV, code_to_text)
+        if not valid_examples:
+            raise RuntimeError("no validation pairs built")
+        print(f"Valid pairs (из сегментов): {len(valid_examples)}")
+        valid_dataset = Dataset.from_list(
+            [{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in valid_examples]
+        )
 
     n = len(full_train_dataset)
     max_n = int(args.max_train_samples) if args.max_train_samples is not None else None
@@ -653,11 +711,12 @@ def run_training(args) -> Dict[str, Any]:
         train_dataset = full_train_dataset
         print(f"Train dataset: {len(train_dataset)} сэмплов (чекпоинты каждые {args.save_steps} шагов)")
 
-    # Для precomputed-batches meta-колонки не нужны на этапе обучения:
-    # precomputed sampler использует только индексы, а loss обучается на text1/text2.
-    # Это убирает риск "лишнего текста" и позволяет использовать обычный collator.
-    if use_precomputed_batches:
-        to_remove = sorted(_HIERARCHICAL_SAMPLER_META_COLS & set(train_dataset.column_names))
+    # Для precomputed-batches meta-колонки не нужны loss-у,
+    # но нужны sampler'у, если включена FN-фильтрация батчей.
+    if use_precomputed_batches and filter_fn_pair_frac_max is None:
+        to_remove = sorted(
+            (_HIERARCHICAL_SAMPLER_META_COLS | {"segment_index"}) & set(train_dataset.column_names)
+        )
         if to_remove:
             train_dataset = train_dataset.remove_columns(to_remove)
             print(f"Precomputed mode: удалены meta-колонки из train_dataset: {to_remove}")
@@ -676,6 +735,8 @@ def run_training(args) -> Dict[str, Any]:
 
     if args.loss == "gist" and args.disable_guide_safe_hard:
         raise ValueError("--disable-guide-safe-hard несовместим с --loss gist (GIST требует guide).")
+    if args.loss == "gist" and use_triplets:
+        raise ValueError("--loss gist несовместим с --triplets-jsonl")
     use_guide_for_sampler = bool(args.use_hierarchical_sampler and not args.disable_guide_safe_hard)
     guide_st: SentenceTransformer | None = None
     if args.loss == "gist" or use_guide_for_sampler:
@@ -696,6 +757,15 @@ def run_training(args) -> Dict[str, Any]:
             margin=float(args.gist_relative_margin),
         )
         print(f"Loss: CachedGISTEmbedLoss (relative margin={args.gist_relative_margin})")
+    elif args.loss == "triplet":
+        train_loss = losses.TripletLoss(
+            model,
+            distance_metric=losses.TripletDistanceMetric.COSINE,
+            triplet_margin=float(getattr(args, "triplet_margin", 0.15)),
+        )
+        print(
+            f"Loss: TripletLoss (COSINE, triplet_margin={float(getattr(args, 'triplet_margin', 0.15))})"
+        )
     else:
         train_loss = losses.CachedMultipleNegativesRankingLoss(
             model, mini_batch_size=int(args.mini_batch_size), show_progress_bar=False
@@ -710,7 +780,10 @@ def run_training(args) -> Dict[str, Any]:
     if use_precomputed_batches:
         from lib.precomputed_epoch_batch_sampler import create_precomputed_batch_sampler_factory
 
-        batch_sampler_arg = create_precomputed_batch_sampler_factory(Path(args.precomputed_batches.strip()))
+        batch_sampler_arg = create_precomputed_batch_sampler_factory(
+            Path(args.precomputed_batches.strip()),
+            fn_pair_frac_max=filter_fn_pair_frac_max,
+        )
         print(f"Batch sampler: precomputed ({args.precomputed_batches.strip()})")
     elif args.use_hierarchical_sampler:
         from lib.hierarchical_grnti_batch_sampler import create_hierarchical_batch_sampler_factory
@@ -727,13 +800,22 @@ def run_training(args) -> Dict[str, Any]:
             enable_diagnostics=not args.no_sampler_diagnostics,
             fallback_relaxed=not args.no_sampler_fallback_relaxed,
         )
+    elif use_triplets:
+        batch_sampler_arg = BatchSamplers.BATCH_SAMPLER
     else:
         batch_sampler_arg = BatchSamplers.NO_DUPLICATES
 
-    # Кастомный batch_sampler + num_workers>0 на Windows часто даёт pickle ошибки
-    # («Can't pickle local object ...» / несериализуемый guide). Для callable — только главный процесс.
+    # Кастомный batch_sampler и triplet-загрузка: num_workers>0 на Windows часто даёт pickle/CUDA IPC ошибки.
+    # («Can't pickle ...» / «pickle data was truncated» при spawn). Для кастомного callable — только главный процесс.
     use_custom_batch_sampler = bool(use_precomputed_batches or args.use_hierarchical_sampler)
-    dataloader_workers = 0 if use_custom_batch_sampler else 2
+    dataloader_workers = 0 if (use_custom_batch_sampler or use_triplets) else 2
+
+    if use_triplets:
+        eval_strategy_arg: str = "no"
+        eval_steps_arg = None
+    else:
+        eval_strategy_arg = "steps" if use_save_steps else "epoch"
+        eval_steps_arg = save_steps_val if use_save_steps else None
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(output_dir),
@@ -748,8 +830,8 @@ def run_training(args) -> Dict[str, Any]:
         save_strategy="steps" if use_save_steps else "epoch",
         save_steps=save_steps_val,
         save_total_limit=2,
-        eval_strategy="steps" if use_save_steps else "epoch",
-        eval_steps=save_steps_val if use_save_steps else None,
+        eval_strategy=eval_strategy_arg,
+        eval_steps=eval_steps_arg,
         load_best_model_at_end=False,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
@@ -757,8 +839,13 @@ def run_training(args) -> Dict[str, Any]:
         fp16=torch.cuda.is_available(),
         remove_unused_columns=False,
     )
-    if use_custom_batch_sampler:
-        print(f"DataLoader: dataloader_num_workers={dataloader_workers} (кастомный batch_sampler)")
+    if use_custom_batch_sampler or use_triplets:
+        note = []
+        if use_custom_batch_sampler:
+            note.append("кастомный batch_sampler")
+        if use_triplets:
+            note.append("triplet / стабильность DataLoader на Windows")
+        print(f"DataLoader: dataloader_num_workers={dataloader_workers} ({'; '.join(note)})")
 
     # Важно: loss должен учиться только на text1->text2.
     # Без этого SentenceTransformerDataCollator токенизирует meta-колонки
@@ -775,7 +862,16 @@ def run_training(args) -> Dict[str, Any]:
         prompts=getattr(training_args, "prompts", None) or None,
         all_special_ids=all_special_ids,
     )
-    collator = base_collator if use_precomputed_batches else MetaIgnoringSentenceTransformerDataCollator(base_collator)
+    if use_triplets:
+        collator = MetaIgnoringSentenceTransformerDataCollator(
+            base_collator,
+            allowed_text_columns=frozenset({"anchor", "positive", "negative"}),
+        )
+    elif use_precomputed_batches and filter_fn_pair_frac_max is not None:
+        # Meta-колонки нужны sampler'у для FN-фильтрации, но в loss они попадать не должны.
+        collator = MetaIgnoringSentenceTransformerDataCollator(base_collator)
+    else:
+        collator = base_collator if use_precomputed_batches else MetaIgnoringSentenceTransformerDataCollator(base_collator)
 
     trainer = FinetuneBiEncoderTrainer(
         model=model,
@@ -838,6 +934,8 @@ def run_training(args) -> Dict[str, Any]:
             "precomputed_batches": args.precomputed_batches.strip() or None,
             "dataloader_drop_last": bool(args.dataloader_drop_last),
             "skip_baseline_test": skip_baseline_test,
+            "triplets_jsonl": getattr(args, "triplets_jsonl", "").strip() or None,
+            "triplet_margin": float(getattr(args, "triplet_margin", 0.15)),
             },
         }
         result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

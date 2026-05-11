@@ -109,7 +109,11 @@ class PrecomputedEpochBatchSamplerFactory:
     Callable для SentenceTransformerTrainingArguments.batch_sampler (picklable, не вложенная функция).
     """
 
-    def __init__(self, precomputed_path: Path | str) -> None:
+    def __init__(
+        self,
+        precomputed_path: Path | str,
+        fn_pair_frac_max: float | None = None,
+    ) -> None:
         path = Path(precomputed_path)
         payload = load_precomputed_batches_payload(path)
         if int(payload.get("format_version", 0)) != 1:
@@ -120,6 +124,7 @@ class PrecomputedEpochBatchSamplerFactory:
         file_args = payload.get("args") or {}
         self.file_bs = int(file_args.get("batch_size", 0))
         self.file_drop_last = bool(file_args.get("drop_last", False))
+        self.fn_pair_frac_max = float(fn_pair_frac_max) if fn_pair_frac_max is not None else None
 
     def __call__(
         self,
@@ -147,6 +152,76 @@ class PrecomputedEpochBatchSamplerFactory:
                 "или перегенерируйте батчи."
             )
         _validate_indices(len(dataset), self.batches_by_epoch)
+        if self.fn_pair_frac_max is not None:
+            # Фильтруем батчи по FN-парам (anchor->candidate), где leaf(candidate) содержится в doc_gold_leaves(anchor).
+            required_cols = {"leaf", "doc_gold_leaves"}
+            cols = set(getattr(dataset, "column_names", []) or [])
+            missing = required_cols - cols
+            if missing:
+                raise ValueError(
+                    f"Для FN-фильтрации нужен датасет с колонками {sorted(required_cols)}, "
+                    f"но в train_dataset колонки: {sorted(cols)}. Missing={sorted(missing)}"
+                )
+
+            leaf_cache: dict[int, str] = {}
+            gold_cache: dict[int, frozenset[str]] = {}
+
+            def get_leaf(idx: int) -> str:
+                if idx not in leaf_cache:
+                    leaf_cache[idx] = str(dataset[idx]["leaf"])
+                return leaf_cache[idx]
+
+            def get_gold(idx: int) -> frozenset[str]:
+                if idx not in gold_cache:
+                    raw = str(dataset[idx].get("doc_gold_leaves") or "")
+                    gold_cache[idx] = frozenset(c.strip() for c in raw.split(";") if c.strip())
+                return gold_cache[idx]
+
+            filtered_by_epoch: List[List[List[int]]] = []
+            for epoch_batches in self.batches_by_epoch:
+                new_epoch_batches: List[List[int]] = []
+                for batch in epoch_batches:
+                    bsz = len(batch)
+                    if bsz <= 1:
+                        new_epoch_batches.append(batch)
+                        continue
+                    total_pairs = bsz * (bsz - 1)
+                    fn_pairs = 0
+                    # FN-проверка: (a -> c), a!=c, leaf_c in gold_sets[a]
+                    for a in range(bsz):
+                        gold_a = get_gold(batch[a])
+                        for c in range(bsz):
+                            if a == c:
+                                continue
+                            if get_leaf(batch[c]) in gold_a:
+                                fn_pairs += 1
+                        # quick break if already above threshold (optional)
+                        if float(fn_pairs) / float(total_pairs) > self.fn_pair_frac_max:
+                            break
+                    fn_pair_frac = float(fn_pairs) / float(total_pairs) if total_pairs else 0.0
+                    if fn_pair_frac <= self.fn_pair_frac_max:
+                        new_epoch_batches.append(batch)
+
+                filtered_by_epoch.append(new_epoch_batches)
+
+            # Требование PrecomputedEpochBatchSampler: одинаковая длина batches_by_epoch по эпохам.
+            min_len = min(len(eb) for eb in filtered_by_epoch) if filtered_by_epoch else 0
+            if min_len <= 0:
+                raise RuntimeError(
+                    f"FN-фильтрация {self.fn_pair_frac_max} оставила 0 батчей (или все эпохи полностью вырезаны)."
+                )
+            filtered_by_epoch = [eb[:min_len] for eb in filtered_by_epoch]
+
+            return PrecomputedEpochBatchSampler(
+                dataset,
+                batch_size=int(batch_size),
+                drop_last=bool(drop_last),
+                batches_by_epoch=filtered_by_epoch,
+                valid_label_columns=valid_label_columns,
+                generator=generator,
+                seed=seed,
+            )
+
         return PrecomputedEpochBatchSampler(
             dataset,
             batch_size=int(batch_size),
@@ -158,6 +233,9 @@ class PrecomputedEpochBatchSamplerFactory:
         )
 
 
-def create_precomputed_batch_sampler_factory(precomputed_path: Path | str) -> PrecomputedEpochBatchSamplerFactory:
+def create_precomputed_batch_sampler_factory(
+    precomputed_path: Path | str,
+    fn_pair_frac_max: float | None = None,
+) -> PrecomputedEpochBatchSamplerFactory:
     """Обёртка для совместимости."""
-    return PrecomputedEpochBatchSamplerFactory(precomputed_path)
+    return PrecomputedEpochBatchSamplerFactory(precomputed_path, fn_pair_frac_max=fn_pair_frac_max)

@@ -96,6 +96,8 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
         max_scored_candidates: int = 256,
         fallback_relaxed: bool = True,
         enable_diagnostics: bool = True,
+        fallback_multilabel_relaxed: bool = True,
+        fallback_basic_relaxed: bool = True,
     ) -> None:
         # Не удалять метаданные GRNTI даже если valid_label_columns пересекается с именами колонок.
         _grnti_meta_cols = {"doc_id", "leaf", "parent", "grand", "doc_gold_leaves"}
@@ -122,6 +124,8 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
         self.max_scored_candidates = int(max_scored_candidates)
         self.fallback_relaxed = bool(fallback_relaxed)
         self.enable_diagnostics = bool(enable_diagnostics)
+        self.fallback_multilabel_relaxed = bool(fallback_multilabel_relaxed)
+        self.fallback_basic_relaxed = bool(fallback_basic_relaxed)
 
         required = {"text1", "text2", "doc_id", "leaf", "parent", "grand", "doc_gold_leaves"}
         missing = required - set(self.dataset.column_names)
@@ -177,6 +181,8 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
         self._diag_batches = 0
         self._diag_fallbacks = 0
         self._diag_unsafe_hard_relaxed = 0
+        self._diag_multilabel_relaxed = 0
+        self._diag_basic_relaxed = 0
 
     def _training_epoch_1based(self) -> int:
         # HF Trainer: set_epoch(0) на первой эпохе, затем инкремент
@@ -317,8 +323,11 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
         self._diag_batches = 0
         self._diag_fallbacks = 0
         self._diag_unsafe_hard_relaxed = 0
+        self._diag_multilabel_relaxed = 0
+        self._diag_basic_relaxed = 0
 
-    def _finalize_batch_diag(self, batch_idx: List[int]) -> None:
+    def _directed_edge_totals(self, batch_idx: List[int]) -> Tuple[int, int, int]:
+        """Число направленных рёбер far/mid/hard между всеми различными парами в batch (как в диагностике)."""
         cf = cm = ch = 0
         for ii in range(len(batch_idx)):
             for jj in range(len(batch_idx)):
@@ -335,10 +344,168 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
                     cm += 1
                 elif t == "hard":
                     ch += 1
+        return cf, cm, ch
+
+    def _finalize_batch_diag(self, batch_idx: List[int]) -> None:
+        cf, cm, ch = self._directed_edge_totals(batch_idx)
         self._diag_edges_far += cf
         self._diag_edges_mid += cm
         self._diag_edges_hard += ch
         self._diag_batches += 1
+
+    def _try_add_one(
+        self,
+        batch: List[int],
+        pool: List[int],
+        cf: int,
+        cm: int,
+        ch: int,
+        device: torch.device,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Один шаг добавления индекса в батч (логика как в __iter__).
+        Возвращает (j, df, dm, dh) для присоединения j или None, если не удалось.
+        """
+        if not pool:
+            return None
+        target = self._curriculum_targets()
+
+        w = torch.tensor([self._base_w[i] for i in pool], dtype=torch.double)
+        w = w / w.sum().clamp_min(1e-12)
+        cand_count = min(len(pool), self.max_scored_candidates)
+        pick = torch.multinomial(w, cand_count, replacement=False, generator=self.generator).tolist()
+        candidates = [pool[k] for k in pick]
+
+        best_j: Optional[int] = None
+        best_score = float("-inf")
+        for j in candidates:
+            if not self._basic_ok(batch, j):
+                continue
+            if not self._multilabel_ok(batch, j):
+                continue
+            if not self._safe_hard_ok(batch, j, device):
+                continue
+            sc = self._score_candidate(batch, j, target, cf, cm, ch)
+            if sc > best_score:
+                best_score = sc
+                best_j = j
+
+        if best_j is None:
+            if self.fallback_relaxed:
+                order = torch.randperm(len(pool), generator=self.generator).tolist()
+                for k in order:
+                    j = pool[k]
+                    if not self._basic_ok(batch, j):
+                        continue
+                    if not self._multilabel_ok(batch, j):
+                        continue
+                    if not self._safe_hard_ok(batch, j, device):
+                        continue
+                    best_j = j
+                    self._diag_fallbacks += 1
+                    break
+
+        if best_j is None:
+            best_score = float("-inf")
+            for j in candidates:
+                if not self._basic_ok(batch, j):
+                    continue
+                if not self._multilabel_ok(batch, j):
+                    continue
+                sc = self._score_candidate(batch, j, target, cf, cm, ch)
+                if sc > best_score:
+                    best_score = sc
+                    best_j = j
+            if best_j is not None:
+                self._diag_unsafe_hard_relaxed += 1
+
+        if best_j is None and self.fallback_relaxed:
+            order = torch.randperm(len(pool), generator=self.generator).tolist()
+            for k in order:
+                j = pool[k]
+                if not self._basic_ok(batch, j):
+                    continue
+                if not self._multilabel_ok(batch, j):
+                    continue
+                best_j = j
+                self._diag_unsafe_hard_relaxed += 1
+                break
+
+        if best_j is None and self.fallback_multilabel_relaxed:
+            best_score = float("-inf")
+            for j in candidates:
+                if not self._basic_ok(batch, j):
+                    continue
+                sc = self._score_candidate(batch, j, target, cf, cm, ch)
+                if sc > best_score:
+                    best_score = sc
+                    best_j = j
+            if best_j is not None:
+                self._diag_multilabel_relaxed += 1
+
+        if best_j is None and self.fallback_multilabel_relaxed and self.fallback_relaxed:
+            order = torch.randperm(len(pool), generator=self.generator).tolist()
+            for k in order:
+                j = pool[k]
+                if not self._basic_ok(batch, j):
+                    continue
+                best_j = j
+                self._diag_multilabel_relaxed += 1
+                break
+
+        if best_j is None and self.fallback_basic_relaxed:
+            best_score = float("-inf")
+            for j in candidates:
+                sc = self._score_candidate(batch, j, target, cf, cm, ch)
+                if sc > best_score:
+                    best_score = sc
+                    best_j = j
+            if best_j is not None:
+                self._diag_basic_relaxed += 1
+
+        if best_j is None and self.fallback_basic_relaxed and self.fallback_relaxed:
+            order = torch.randperm(len(pool), generator=self.generator).tolist()
+            for k in order:
+                best_j = pool[k]
+                self._diag_basic_relaxed += 1
+                break
+
+        if best_j is None:
+            return None
+        df, dm, dh = self._edge_delta(batch, best_j)
+        return best_j, df, dm, dh
+
+    def fill_batch_tail(
+        self,
+        batch_prefix: List[int],
+        pool_unassigned: set[int],
+    ) -> List[int]:
+        """
+        Добивает батч до batch_size той же логикой выбора, что и в __iter__, без guide — safe-hard всегда ok.
+
+        pool_unassigned: индексы ещё ни в каком батче; не должен пересекаться с batch_prefix.
+        Префикс (например, seed + партнёры из JSONL) остаётся как есть; дальнейшие элементы подбираются
+        с учётом basic/multilabel/куррикуля и стадий relaxed.
+        """
+        device = self.guide_model.device if self.guide_model is not None else torch.device("cpu")
+        batch = list(batch_prefix)
+        cf, cm, ch = self._directed_edge_totals(batch)
+        overlap = set(batch_prefix) & pool_unassigned
+        if overlap:
+            raise ValueError(f"batch_prefix пересекается с pool_unassigned: {overlap}")
+        while len(batch) < self.batch_size:
+            pool = [idx for idx in pool_unassigned if idx not in batch]
+            if not pool:
+                break
+            picked = self._try_add_one(batch, pool, cf, cm, ch, device)
+            if picked is None:
+                break
+            j, df, dm, dh = picked
+            cf += df
+            cm += dm
+            ch += dh
+            batch.append(j)
+        return batch
 
     def __iter__(self) -> Iterator[List[int]]:
         if self.generator and self.seed is not None:
@@ -350,7 +517,6 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
         n = len(self.dataset)
         perm = torch.randperm(n, generator=self.generator).tolist()
         remaining = dict.fromkeys(perm)
-        target = self._curriculum_targets()
 
         while remaining:
             batch: List[int] = []
@@ -359,61 +525,14 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
                 pool = [idx for idx in remaining if idx not in batch]
                 if not pool:
                     break
-
-                w = torch.tensor([self._base_w[i] for i in pool], dtype=torch.double)
-                w = w / w.sum().clamp_min(1e-12)
-                cand_count = min(len(pool), self.max_scored_candidates)
-                pick = torch.multinomial(w, cand_count, replacement=False, generator=self.generator).tolist()
-                candidates = [pool[k] for k in pick]
-
-                best_j: Optional[int] = None
-                best_score = float("-inf")
-                for j in candidates:
-                    if not self._basic_ok(batch, j):
-                        continue
-                    if not self._multilabel_ok(batch, j):
-                        continue
-                    if not self._safe_hard_ok(batch, j, device):
-                        continue
-                    sc = self._score_candidate(batch, j, target, cf, cm, ch)
-                    if sc > best_score:
-                        best_score = sc
-                        best_j = j
-
-                if best_j is None and self.fallback_relaxed:
-                    order = torch.randperm(len(pool), generator=self.generator).tolist()
-                    for k in order:
-                        j = pool[k]
-                        if not self._basic_ok(batch, j):
-                            continue
-                        if not self._multilabel_ok(batch, j):
-                            continue
-                        if not self._safe_hard_ok(batch, j, device):
-                            continue
-                        best_j = j
-                        self._diag_fallbacks += 1
-                        break
-
-                if best_j is None and self.guide_model is not None:
-                    order = torch.randperm(len(pool), generator=self.generator).tolist()
-                    for k in order:
-                        j = pool[k]
-                        if not self._basic_ok(batch, j):
-                            continue
-                        if not self._multilabel_ok(batch, j):
-                            continue
-                        best_j = j
-                        self._diag_unsafe_hard_relaxed += 1
-                        break
-
-                if best_j is None:
+                picked = self._try_add_one(batch, pool, cf, cm, ch, device)
+                if picked is None:
                     break
-
-                df, dm, dh = self._edge_delta(batch, best_j)
+                j, df, dm, dh = picked
                 cf += df
                 cm += dm
                 ch += dh
-                batch.append(best_j)
+                batch.append(j)
 
             if len(batch) == self.batch_size:
                 self._finalize_batch_diag(batch)
@@ -441,6 +560,8 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
             "reject_guide": float(self._diag_reject_guide),
             "fallbacks": float(self._diag_fallbacks),
             "unsafe_hard_relaxed": float(self._diag_unsafe_hard_relaxed),
+            "multilabel_relaxed": float(self._diag_multilabel_relaxed),
+            "basic_relaxed": float(self._diag_basic_relaxed),
             "curriculum_epoch": float(self._training_epoch_1based()),
         }
         if self.enable_diagnostics and tot_e > 0:
@@ -452,7 +573,8 @@ class HierarchicalGrntiBatchSampler(DefaultBatchSampler):
                 f"{self.diagnostics_last_epoch['edge_hard_frac']:.2f} | "
                 f"rej ml/dupL/dupD/guide={self._diag_reject_multilabel}/"
                 f"{self._diag_reject_dup_leaf}/{self._diag_reject_dup_doc}/{self._diag_reject_guide} | "
-                f"fallbacks={self._diag_fallbacks} unsafe_hard_relaxed={self._diag_unsafe_hard_relaxed}"
+                f"fallbacks={self._diag_fallbacks} unsafe_hard_relaxed={self._diag_unsafe_hard_relaxed} "
+                f"multilabel_relaxed={self._diag_multilabel_relaxed} basic_relaxed={self._diag_basic_relaxed}"
             )
 
     def __len__(self) -> int:

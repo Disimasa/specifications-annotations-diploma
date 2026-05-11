@@ -8,6 +8,19 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_EMBEDDINGS_PATH = PROJECT_DIR / "data" / "ontology_grnti_embeddings.npz"
 
 
+def _safe_name(model_name: str) -> str:
+    """Basename модели / HF id для имён файлов эмбеддингов (безопасные символы)."""
+    candidate = (model_name or "").strip()
+    if not candidate:
+        return "default"
+    if "/" in candidate:
+        tag = candidate.split("/")[-1]
+    else:
+        tag = Path(candidate).name or candidate
+    tag = tag.replace(" ", "_").replace("\\", "_").replace("/", "_")
+    return tag or "default"
+
+
 MODEL_TO_ONTOLOGY_EMB: dict[str, Path] = {
     "deepvk/USER-bge-m3": DEFAULT_EMBEDDINGS_PATH.with_name("ontology_grnti_embeddings_USER-bge-m3.npz"),
     str((PROJECT_DIR / "models" / "bi-encoder-gisnauka-trainer" / "best" / "20260314_002534").resolve()):

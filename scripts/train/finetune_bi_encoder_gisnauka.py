@@ -9,12 +9,6 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import torch
 from sentence_transformers import InputExample, SentenceTransformer, losses
 
-# первый раз
-# python scripts/train/finetune_bi_encoder_gisnauka.py --output-dir models/bi-encoder-gisnauka-200k --max-steps 40000
-# последующие разы
-# python scripts/train/finetune_bi_encoder_gisnauka.py --resume models/bi-encoder-gisnauka-200k --output-dir models/bi-encoder-gisnauka-200k --max-steps 40000
-
-
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = PROJECT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
@@ -516,11 +510,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-model", type=str, default=BASE_MODEL)
-    parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to continue training from (overrides --base-model)")
+    parser.add_argument("--resume", type=str, default="")
     parser.add_argument("--output-dir", type=str, default=str(OUTPUT_DIR))
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=None, help="If set, train at most this many steps then save and exit (for multi-session runs)")
-    parser.add_argument("--max-train-samples", type=int, default=None, help="If set, train at most this many samples per run then save and exit (for multi-session runs; use with --resume to cover all data)")
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--early-stop-patience", type=int, default=1)
@@ -541,20 +535,17 @@ def main() -> None:
             state = json.loads(state_path.read_text(encoding="utf-8"))
             steps_done = int(state.get("steps_done", 0))
             samples_done = int(state.get("samples_done", 0))
-            print(f"Resuming from step {steps_done}, samples {samples_done} (next run will continue with the following data)")
+            print(f"Resuming from step {steps_done}, samples {samples_done}")
     else:
         model = SentenceTransformer(args.base_model, device=device)
 
     code_to_text = load_ontology_texts(ONTOLOGY_PATH)
     train_examples, train_doc_ids = build_train_pairs_from_segments(code_to_text)
-    if not train_examples:
-        raise RuntimeError("no training pairs built")
 
     print(f"Train pairs (из сегментов): {len(train_examples)}")
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
 
-    # Кастомный батчер: в пределах батча уникальные сегменты, специализации и документы
     g = torch.Generator()
     g.manual_seed(int(args.seed))
     batch_sampler = UniquePairsBatchSampler(

@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any ,Dict ,List ,Optional 
 
 import streamlit as st 
+import torch
 
 
 PROJECT_DIR =Path (__file__ ).resolve ().parents [1 ]
@@ -14,8 +15,8 @@ DEFAULT_ONTOLOGY_PATH =PROJECT_DIR /"data"/"ontology_grnti_with_llm.json"
 DEFAULT_EMBEDDINGS_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings.npz"
 DEFAULT_TEXTS_DIR =PROJECT_DIR /"data"/"specifications"/"texts"
 
-BEST_MODEL_BASE =PROJECT_DIR /"models"/"bi-encoder-gisnauka-trainer"/"best"
-FALLBACK_BI_ENCODER ="deepvk/USER-bge-m3"
+FIXED_BI_ENCODER_MODEL_PATH =PROJECT_DIR /"models"/"final"
+FIXED_ONTOLOGY_EMBEDDINGS_PATH =PROJECT_DIR /"data"/"ontology_grnti_embeddings_fnfilter001.npz"
 
 
 SRC_DIR =PROJECT_DIR /"src"
@@ -24,6 +25,15 @@ if str (SRC_DIR )not in sys .path :
 
 from annotation .annotator import DEFAULT_CROSS_ENCODER_MODEL ,EmbeddingAnnotator
 from lib .ontology_embeddings_registry import get_precomputed_embeddings_path_for_model 
+from lib .eval_defaults import (
+EVAL_K ,
+DEFAULT_THRESHOLD ,
+DEFAULT_TOP_K ,
+DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT ,
+DEFAULT_RERANK_TOP_K ,
+DEFAULT_CONFIDENCE_AGGREGATION ,
+DEFAULT_FILTER_SEGMENTS ,
+)
 
 
 def _normalize_model_path (value :str )->str :
@@ -42,36 +52,27 @@ def _normalize_model_path (value :str )->str :
 
 
 def _default_embeddings_path_for_model (model_name :str )->Path :
+    if Path (model_name ).resolve ()==FIXED_BI_ENCODER_MODEL_PATH .resolve ():
+        return FIXED_ONTOLOGY_EMBEDDINGS_PATH
     name =Path (model_name ).name or str (model_name )
     safe =name .replace (" ","_").replace ("\\","_").replace ("/","_")
     return DEFAULT_EMBEDDINGS_PATH .with_name (f"ontology_grnti_embeddings_{safe}.npz")
 
 
 def _list_bi_encoder_options ()->List [str ]:
-    options :List [str ]=[]
-    # Первая опция — best обученная модель, если она есть
-    if BEST_MODEL_BASE .exists ()and BEST_MODEL_BASE .is_dir ():
-        subdirs =[p for p in sorted (BEST_MODEL_BASE .iterdir ())if p .is_dir ()]
-        if subdirs :
-            options .append (str (subdirs [0 ]))
-    if not options :
-        options .append (FALLBACK_BI_ENCODER )
-    else :
-        options .append (FALLBACK_BI_ENCODER )
+    return [str (FIXED_BI_ENCODER_MODEL_PATH )]
 
-    models_dir =PROJECT_DIR /"models"
-    if models_dir .exists ():
-        for p in sorted (models_dir .iterdir ()):
-            if p .is_dir ()and p .resolve ()!=BEST_MODEL_BASE .parent .resolve ():
-                options .append (str (p ))
-    seen :set [str ]=set ()
-    uniq :List [str ]=[]
-    for o in options :
-        if o in seen :
-            continue 
-        seen .add (o )
-        uniq .append (o )
-    return uniq 
+
+def _display_model_option (value :str )->str :
+    raw =(value or "").strip ()
+    if not raw :
+        return raw
+    p =Path (raw )
+    # Для локальных путей показываем только имя папки (короче и удобнее),
+    # для HF id оставляем исходную строку.
+    if p .is_absolute ()or raw .startswith ("models\\")or raw .startswith ("models/"):
+        return p .name or raw
+    return raw
 
 
 def _safe_read_uploaded_text (uploaded_file )->str :
@@ -119,6 +120,7 @@ def _get_annotator (
 ontology_path :str ,
 bi_encoder_model :str ,
 cross_encoder_model :Optional [str ],
+inference_device :str ,
 )->EmbeddingAnnotator :
     candidate =_default_embeddings_path_for_model (bi_encoder_model )
     emb_path =candidate if candidate .exists ()else DEFAULT_EMBEDDINGS_PATH 
@@ -129,6 +131,7 @@ cross_encoder_model :Optional [str ],
     cross_encoder_model =_normalize_model_path (cross_encoder_model or "")if cross_encoder_model else None ,
     precomputed_embeddings_path =emb_path if emb_path .exists ()else None ,
     use_precomputed_embeddings =use_pre ,
+    device =inference_device ,
     )
 
 
@@ -173,20 +176,20 @@ def main ()->None :
     with st .sidebar :
         st .header ("Параметры")
 
-        threshold =st .slider ("Порог score",0.0 ,1.0 ,0.55 ,0.01 )
-        top_k =st .number_input ("Top-K сегментов на компетенцию",min_value =1 ,max_value =100 ,value =10 ,step =1 )
+        threshold =st .slider ("Порог score",0.0 ,1.0 ,DEFAULT_THRESHOLD ,0.01 )
+        top_k =st .number_input ("Top-K сегментов на компетенцию",min_value =1 ,max_value =100 ,value =DEFAULT_TOP_K ,step =1 )
         top_n =st .number_input ("Top-N компетенций (вывод)",min_value =1 ,max_value =200 ,value =20 ,step =1 )
 
         enable_rerank =st .checkbox (
         "Включить re-ranking (cross-encoder)",
-        value =False ,
+        value =DEFAULT_RERANK_TOP_K >0 ,
         help ="Если выключено, используется только bi-encoder.",
         )
         rerank_top_k =st .number_input (
         "Rerank: сколько компетенций переранжировать",
         min_value =0 ,
         max_value =200 ,
-        value =20 if enable_rerank else 0 ,
+        value =DEFAULT_RERANK_TOP_K if enable_rerank else 0 ,
         step =1 ,
         disabled =not enable_rerank ,
         help ="0 = re-ranking отключён. Иначе cross-encoder применяется к top-K компетенциям.",
@@ -196,14 +199,12 @@ def main ()->None :
         "Контекст для коротких сегментов (макс. длина, 0=выкл)",
         min_value =0 ,
         max_value =2000 ,
-        value =0 ,
+        value =DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT ,
         step =10 ,
         help ="Если сегмент короче этого значения, добавляется контекст из соседних сегментов.",
         )
 
-        confidence_aggregation =st .selectbox (
-        "Агрегация скоров сегментов в скор документа",
-        options =[
+        _agg_options =[
         "sum",
         "sum_log_count",
         "mean_log_count",
@@ -211,8 +212,15 @@ def main ()->None :
         "mean",
         "median",
         "weighted_mean",
-        ],
-        index =0 ,
+        ]
+        try :
+            _agg_default_idx =_agg_options .index (DEFAULT_CONFIDENCE_AGGREGATION )
+        except ValueError :
+            _agg_default_idx =0
+        confidence_aggregation =st .selectbox (
+        "Агрегация скоров сегментов в скор документа",
+        options =_agg_options ,
+        index =_agg_default_idx ,
         help =(
         "sum — сумма скоров по сегментам (рекомендуется); "
         "sum_log_count — sum * log(1+кол-во сегментов); "
@@ -221,7 +229,7 @@ def main ()->None :
         ),
         )
 
-        filter_segments =st .checkbox ("Фильтровать неинформативные сегменты",value =True )
+        filter_segments =st .checkbox ("Фильтровать неинформативные сегменты",value =DEFAULT_FILTER_SEGMENTS )
         use_precomputed_onto_emb =st .checkbox (
         "Использовать прекомпилированные эмбеддинги онтологии (если доступны)",
         value =True ,
@@ -236,7 +244,9 @@ def main ()->None :
         "Bi-encoder (SentenceTransformer)",
         options =bi_encoder_options ,
         index =0 ,
-        help ="Можно выбрать или указать любую модель, совместимую с sentence-transformers.",
+        disabled =True ,
+        format_func =_display_model_option ,
+        help ="Для прода зафиксирована модель из models/final.",
         )
 
         default_cross_encoder_path =_normalize_model_path (DEFAULT_CROSS_ENCODER_MODEL )
@@ -246,6 +256,16 @@ def main ()->None :
         disabled =not enable_rerank ,
         help ="По умолчанию используется локальная модель из models/…",
         )
+        device_options =["cpu","gpu"]
+        inference_device =st .radio (
+        "Устройство инференса",
+        options =device_options ,
+        index =1 if torch .cuda .is_available ()else 0 ,
+        horizontal =True ,
+        help ="GPU использует CUDA. Если CUDA недоступна, будет автоматически использован CPU.",
+        )
+        if inference_device =="gpu"and not torch .cuda .is_available ():
+            st .warning ("GPU выбрана, но CUDA недоступна. Будет использован CPU.")
 
         st .caption (f"Онтология: `{DEFAULT_ONTOLOGY_PATH}`")
 
@@ -295,6 +315,7 @@ def main ()->None :
                 ontology_path =ontology_path ,
                 bi_encoder_model =bi_encoder_model ,
                 cross_encoder_model =cross_encoder_model if (enable_rerank and rerank_top_k >0 )else None ,
+                inference_device =inference_device ,
                 )
 
                 used_emb =getattr (annotator ,"precomputed_embeddings_path",None )

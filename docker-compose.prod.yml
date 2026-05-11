@@ -1,0 +1,27 @@
+services:
+  app-main:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: diploma-main-app
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    environment:
+      - PYTHONPATH=/app/src
+    # Монтируем только финальную модель и precomputed-эмбеддинги для нее.
+    volumes:
+      - ./models/final:/app/models/final:ro
+      - ./data/ontology_grnti_with_llm.json:/app/data/ontology_grnti_with_llm.json:ro
+      - ./data/ontology_grnti_embeddings_fnfilter001.npz:/app/data/ontology_grnti_embeddings_fnfilter001.npz:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health').read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5

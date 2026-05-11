@@ -26,8 +26,16 @@ class EmbeddingAnnotator:
         cross_encoder_model: str | None = None,
         precomputed_embeddings_path: Path | None = None,
         use_precomputed_embeddings: bool = True,
+        device: str | None = None,
     ) -> None:
-        self.model = SentenceTransformer(model_name)
+        requested_device = (device or "cpu").strip().lower()
+        if requested_device == "gpu":
+            requested_device = "cuda"
+        if requested_device == "cuda" and not torch.cuda.is_available():
+            requested_device = "cpu"
+        self.device = requested_device
+
+        self.model = SentenceTransformer(model_name, device=self.device)
 
         self.cross_encoder_model = cross_encoder_model
         self._cross_encoder = None
@@ -228,7 +236,7 @@ class EmbeddingAnnotator:
                 base_dir = Path(__file__).parent.parent
                 model_path = str(base_dir / model_path)
 
-            self._cross_encoder = CrossEncoder(model_path)
+            self._cross_encoder = CrossEncoder(model_path, device=self.device)
         return self._cross_encoder
 
     def _rerank_with_cross_encoder(self, comp, segments: List[str], candidates: List[tuple[int, float]]) -> List[
