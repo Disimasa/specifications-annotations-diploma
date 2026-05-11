@@ -49,7 +49,7 @@ streamlit run apps/app.py
 ## Прод-запуск в Docker
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose up -d --build
 ```
 ## Требуемые ресурсы
 
