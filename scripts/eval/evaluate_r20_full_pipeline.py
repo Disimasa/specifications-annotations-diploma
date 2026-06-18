@@ -216,34 +216,7 @@ def evaluate_dataset(
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="R@20 по полному пайплайну и document-level")
-    parser.add_argument("--ontology", type=Path, default=DEFAULT_ONTOLOGY)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Би-энкодер: путь к папке или HF id (например deepvk/USER-bge-m3). По умолчанию — первая папка из best/.",
-    )
-    parser.add_argument("--test-csv", type=Path, default=DEFAULT_TEST_GISNAUKA)
-    parser.add_argument(
-        "--test-docs-csv",
-        type=Path,
-        default=DEFAULT_TEST_GISNAUKA_DOCS,
-        help="Новый document-level test из VALID (gisnauka_samples_test_docs.csv).",
-    )
-    parser.add_argument("--gold-jsonl", type=Path, default=DEFAULT_GOLD_JSONL)
-    parser.add_argument("--valid-csv", type=Path, default=DEFAULT_VALID_CSV)
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
-    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    parser.add_argument("--max-segment-context", type=int, default=DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT)
-    parser.add_argument("--rerank-top-k", type=int, default=DEFAULT_RERANK_TOP_K)
-    parser.add_argument("--confidence-aggregation", type=str, default=DEFAULT_CONFIDENCE_AGGREGATION)
-    parser.add_argument("--no-filter-segments", action="store_true")
-    parser.add_argument("--emb", type=Path, default=None)
-    parser.add_argument("--k", type=int, default=EVAL_K)
-    args = parser.parse_args()
-
+def run_full_evaluation(args) -> Dict[str, dict]:
     model_path = args.model if args.model is not None else _resolve_default_model()
     print(f"Би-энкодер: {model_path}")
 
@@ -475,6 +448,37 @@ def main() -> None:
             f"MRR@{k}={res.get(f'MRR@{k}', 0):.4f}  R@M={res.get('R@M', 0):.4f}  "
             f"P@M={res.get('P@M', 0):.4f}  n={res.get('n', 0)}"
         )
+    return results
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="R@20 по полному пайплайну и document-level")
+    parser.add_argument("--ontology", type=Path, default=DEFAULT_ONTOLOGY)
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Би-энкодер: путь к папке или HF id (например deepvk/USER-bge-m3). По умолчанию — первая папка из best/.",
+    )
+    parser.add_argument("--test-csv", type=Path, default=DEFAULT_TEST_GISNAUKA)
+    parser.add_argument(
+        "--test-docs-csv",
+        type=Path,
+        default=DEFAULT_TEST_GISNAUKA_DOCS,
+        help="Новый document-level test из VALID (gisnauka_samples_test_docs.csv).",
+    )
+    parser.add_argument("--gold-jsonl", type=Path, default=DEFAULT_GOLD_JSONL)
+    parser.add_argument("--valid-csv", type=Path, default=DEFAULT_VALID_CSV)
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    parser.add_argument("--max-segment-context", type=int, default=DEFAULT_MAX_SEGMENT_LENGTH_FOR_CONTEXT)
+    parser.add_argument("--rerank-top-k", type=int, default=DEFAULT_RERANK_TOP_K)
+    parser.add_argument("--confidence-aggregation", type=str, default=DEFAULT_CONFIDENCE_AGGREGATION)
+    parser.add_argument("--no-filter-segments", action="store_true")
+    parser.add_argument("--emb", type=Path, default=None)
+    parser.add_argument("--k", type=int, default=EVAL_K)
+    args = parser.parse_args()
+    run_full_evaluation(args)
 
 
 if __name__ == "__main__":

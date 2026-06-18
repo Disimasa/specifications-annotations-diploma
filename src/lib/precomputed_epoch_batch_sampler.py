@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 from sentence_transformers.sampler import DefaultBatchSampler
+from tqdm import tqdm
 
 try:
     from datasets import Dataset
@@ -26,6 +27,23 @@ def load_precomputed_batches_payload(path: Path | str) -> Dict[str, Any]:
         return torch.load(p, map_location="cpu", weights_only=False)
     except TypeError:
         return torch.load(p, map_location="cpu")
+
+
+def _apply_max_batches(
+    batches_by_epoch: List[List[List[int]]],
+    max_batches: int,
+) -> List[List[List[int]]]:
+    n = int(max_batches)
+    if n <= 0:
+        raise ValueError(f"max_batches должен быть > 0, получено {max_batches}")
+    total = len(batches_by_epoch[0]) if batches_by_epoch else 0
+    if n > total:
+        raise ValueError(
+            f"max_batches={n} больше числа батчей после FN-фильтра ({total})."
+        )
+    out = [eb[:n] for eb in batches_by_epoch]
+    print(f"Лимит батчей: {n}/{total} (первые N предбатчей эпохи)")
+    return out
 
 
 def _validate_indices(dataset_len: int, batches_by_epoch: List[List[List[int]]]) -> None:
@@ -113,6 +131,7 @@ class PrecomputedEpochBatchSamplerFactory:
         self,
         precomputed_path: Path | str,
         fn_pair_frac_max: float | None = None,
+        max_batches: int | None = None,
     ) -> None:
         path = Path(precomputed_path)
         payload = load_precomputed_batches_payload(path)
@@ -125,6 +144,7 @@ class PrecomputedEpochBatchSamplerFactory:
         self.file_bs = int(file_args.get("batch_size", 0))
         self.file_drop_last = bool(file_args.get("drop_last", False))
         self.fn_pair_frac_max = float(fn_pair_frac_max) if fn_pair_frac_max is not None else None
+        self.max_batches = int(max_batches) if max_batches is not None else None
 
     def __call__(
         self,
@@ -135,12 +155,14 @@ class PrecomputedEpochBatchSamplerFactory:
         generator: Optional[torch.Generator] = None,
         seed: int = 0,
     ):
-        if self.stored_size is not None and len(dataset) != int(self.stored_size):
+        dataset_len = len(dataset)
+        stored = int(self.stored_size) if self.stored_size is not None else dataset_len
+        if stored is not None and dataset_len != stored:
             raise ValueError(
-                f"Размер train_dataset ({len(dataset)}) не совпадает с записанным в файле "
-                f"({self.stored_size}). Соберите датасет так же, как при generate_hierarchical_batches "
-                "(те же CSV, ontology, seed shuffle, --max-train-samples)."
+                f"Размер train_dataset ({dataset_len}) не совпадает с предбатчами ({stored}). "
+                "При --precomputed-batches нужен полный train; для smoke укажите --max-batches."
             )
+        batches_by_epoch = self.batches_by_epoch
         if self.file_bs and int(batch_size) != self.file_bs:
             raise ValueError(
                 f"--batch-size ({batch_size}) должен совпадать с batch_size в файле предбатчей ({self.file_bs})."
@@ -151,7 +173,7 @@ class PrecomputedEpochBatchSamplerFactory:
                 f"({self.file_drop_last}). Задайте в SentenceTransformerTrainingArguments(dataloader_drop_last=...) "
                 "или перегенерируйте батчи."
             )
-        _validate_indices(len(dataset), self.batches_by_epoch)
+        _validate_indices(dataset_len, batches_by_epoch)
         if self.fn_pair_frac_max is not None:
             # Фильтруем батчи по FN-парам (anchor->candidate), где leaf(candidate) содержится в doc_gold_leaves(anchor).
             required_cols = {"leaf", "doc_gold_leaves"}
@@ -178,9 +200,19 @@ class PrecomputedEpochBatchSamplerFactory:
                 return gold_cache[idx]
 
             filtered_by_epoch: List[List[List[int]]] = []
-            for epoch_batches in self.batches_by_epoch:
+            n_raw_batches = len(batches_by_epoch[0]) if batches_by_epoch else 0
+            print(
+                f"FN-фильтрация предбатчей (fn_pair_frac_max={self.fn_pair_frac_max}): "
+                f"{n_raw_batches} батчей × {len(batches_by_epoch)} эпох..."
+            )
+            for epoch_batches in batches_by_epoch:
                 new_epoch_batches: List[List[int]] = []
-                for batch in epoch_batches:
+                for batch in tqdm(
+                    epoch_batches,
+                    desc="FN-фильтр батчей",
+                    unit="batch",
+                    leave=False,
+                ):
                     bsz = len(batch)
                     if bsz <= 1:
                         new_epoch_batches.append(batch)
@@ -210,23 +242,20 @@ class PrecomputedEpochBatchSamplerFactory:
                 raise RuntimeError(
                     f"FN-фильтрация {self.fn_pair_frac_max} оставила 0 батчей (или все эпохи полностью вырезаны)."
                 )
-            filtered_by_epoch = [eb[:min_len] for eb in filtered_by_epoch]
-
-            return PrecomputedEpochBatchSampler(
-                dataset,
-                batch_size=int(batch_size),
-                drop_last=bool(drop_last),
-                batches_by_epoch=filtered_by_epoch,
-                valid_label_columns=valid_label_columns,
-                generator=generator,
-                seed=seed,
+            batches_by_epoch = [eb[:min_len] for eb in filtered_by_epoch]
+            print(
+                f"FN-фильтрация: осталось {min_len}/{n_raw_batches} батчей на эпоху "
+                f"({100.0 * min_len / n_raw_batches:.1f}%)"
             )
+
+        if self.max_batches is not None:
+            batches_by_epoch = _apply_max_batches(batches_by_epoch, self.max_batches)
 
         return PrecomputedEpochBatchSampler(
             dataset,
             batch_size=int(batch_size),
             drop_last=bool(drop_last),
-            batches_by_epoch=self.batches_by_epoch,
+            batches_by_epoch=batches_by_epoch,
             valid_label_columns=valid_label_columns,
             generator=generator,
             seed=seed,
@@ -236,6 +265,11 @@ class PrecomputedEpochBatchSamplerFactory:
 def create_precomputed_batch_sampler_factory(
     precomputed_path: Path | str,
     fn_pair_frac_max: float | None = None,
+    max_batches: int | None = None,
 ) -> PrecomputedEpochBatchSamplerFactory:
     """Обёртка для совместимости."""
-    return PrecomputedEpochBatchSamplerFactory(precomputed_path, fn_pair_frac_max=fn_pair_frac_max)
+    return PrecomputedEpochBatchSamplerFactory(
+        precomputed_path,
+        fn_pair_frac_max=fn_pair_frac_max,
+        max_batches=max_batches,
+    )

@@ -72,3 +72,32 @@ docker compose up -d --build
 - **RAM:**
   - 8 - 16гб?
 
+## Сравнение онтологий (обучение)
+
+Скрипт: `scripts/train/run_base_model_training_pipeline.py`
+
+Предбатчи **общие** для всех онтологий (зависят от CSV сегментов и кодов ГРНТИ, не от текста описаний). При смене онтологии пересчитываются только эмбеддинги, обучение и оценка.
+
+```bash
+# Полная выборка; предбатчи: hb_grandfocus1-0-0_...pt (curriculum 1,0,0)
+python scripts/train/run_base_model_training_pipeline.py --ontology data/my_ontology_v1.json
+
+# Другая онтология — те же батчи, новая модель и метрики
+python scripts/train/run_base_model_training_pipeline.py \
+  --ontology data/my_ontology_v2.json \
+  --trained-model-path models/ontology-v2
+
+# Smoke-тест (полный train + предбатчи + FN; первые 4 батча)
+python scripts/train/run_base_model_training_pipeline.py --ontology data/my_ontology.json --max-batches 4 --force
+```
+
+Аргументы:
+- `--ontology` — JSON онтологии для обучения и оценки;
+- `--max-batches` — smoke: первые N предбатчей (полный train, FN-фильтр, как prod);
+- `--max-train-samples` — устаревший alias: ceil(N/128) батчей при предбатчах;
+- `--trained-model-path` — каталог модели;
+- `--precomputed-batches` — свой `.pt` (по умолчанию `hb_grandfocus1-0-0_...pt` на полной выборке);
+- `--regenerate-batches` — пересобрать общие предбатчи (редко нужно);
+- `--force` — переобучить эту онтологию заново.
+
+Артефакты по онтологии: `data/pipeline/ontology_runs/{run_key}/`. Состояние: `data/pipeline/base_model_state.json`.

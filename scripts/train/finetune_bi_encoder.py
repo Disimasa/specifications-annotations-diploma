@@ -55,8 +55,18 @@ class FinetuneBiEncoderTrainer(SentenceTransformerTrainer):
                     )
             elif isinstance(bs, PrecomputedEpochBatchSamplerFactory):
                 stored_size = getattr(bs, "stored_size", None)
+                cols = set(getattr(dataset, "column_names", []) or [])
+                # Eval/valid: только text1/text2, размер != предбатчам — обычный sampler.
                 if stored_size is not None and len(dataset) != int(stored_size):
-                    # Eval dataset (text1/text2) имеет другой размер, поэтому precomputed sampler использовать нельзя.
+                    return NoDuplicatesBatchSampler(
+                        dataset,
+                        batch_size=batch_size,
+                        drop_last=drop_last,
+                        valid_label_columns=valid_label_columns,
+                        generator=generator,
+                        seed=seed,
+                    )
+                if not {"leaf", "doc_gold_leaves"}.issubset(cols):
                     return NoDuplicatesBatchSampler(
                         dataset,
                         batch_size=batch_size,
@@ -165,6 +175,13 @@ def _is_leaf_grnti_code(code: str) -> bool:
     return len(parts) == 3 and all(p.isdigit() for p in parts)
 
 
+def resolve_ontology_path(args) -> Path:
+    raw = (getattr(args, "ontology_path", None) or "").strip()
+    if raw:
+        return Path(raw)
+    return ONTOLOGY_PATH
+
+
 def load_ontology_texts(path: Path) -> Dict[str, str]:
     data = json.loads(path.read_text(encoding="utf-8"))
     nodes = data.get("nodes", [])
@@ -187,7 +204,7 @@ def load_ontology_texts(path: Path) -> Dict[str, str]:
     return code_to_text
 
 
-def evaluate_on_test(model_ref: str) -> Dict[str, float]:
+def evaluate_on_test(model_ref: str, ontology_path: Path | None = None) -> Dict[str, float]:
     """R@20/P@20 (leaf) и R@20 (parent) на тесте через full pipeline."""
     from annotation.annotator import EmbeddingAnnotator
     from lib.eval_defaults import (
@@ -204,14 +221,15 @@ def evaluate_on_test(model_ref: str) -> Dict[str, float]:
     from lib.grnti_ontology import load_ontology_code_map
     from tqdm import tqdm
 
+    ont_path = ontology_path or ONTOLOGY_PATH
     if not TEST_CSV.exists():
         raise FileNotFoundError(f"test CSV not found: {TEST_CSV}")
-    if not ONTOLOGY_PATH.exists():
-        raise FileNotFoundError(f"ontology not found: {ONTOLOGY_PATH}")
+    if not ont_path.exists():
+        raise FileNotFoundError(f"ontology not found: {ont_path}")
 
-    competency_id_to_code = load_ontology_code_map(ONTOLOGY_PATH)
+    competency_id_to_code = load_ontology_code_map(ont_path)
     annotator = EmbeddingAnnotator(
-        ontology_path=ONTOLOGY_PATH,
+        ontology_path=ont_path,
         model_name=model_ref,
         cross_encoder_model=None,
         precomputed_embeddings_path=None,
@@ -454,7 +472,19 @@ def main() -> None:
         "--max-train-samples",
         type=int,
         default=None,
-        help="Макс. сэмплов за один запуск; с --resume следующий чанк (режим по чанкам). Без него — обучение на всех данных с чекпоинтами по шагам.",
+        help=(
+            "Макс. сэмплов за один запуск (без --precomputed-batches: срез датасета и чанки с --resume). "
+            "С --precomputed-batches эквивалентно --max-batches ceil(N/batch_size); датасет остаётся полным."
+        ),
+    )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help=(
+            "С --precomputed-batches: обучить только на первых N предбатчах после FN-фильтра "
+            "(полный train, те же батчи что на prod). Приоритет над --max-train-samples."
+        ),
     )
     parser.add_argument(
         "--save-steps",
@@ -573,12 +603,50 @@ def main() -> None:
         help="Для --precomputed-batches: выкидывать батчи, где fn_pair_frac (false-negative ratio) > этого значения.",
     )
     parser.add_argument(
+        "--ontology-path",
+        type=str,
+        default="",
+        help="JSON онтологии для построения пар при обучении (по умолчанию data/ontology_grnti_with_llm.json).",
+    )
+    parser.add_argument(
+        "--skip-trainer-eval",
+        action="store_true",
+        help="Не гонять eval_loss на valid внутри SentenceTransformerTrainer (быстрее smoke-тесты).",
+    )
+    parser.add_argument(
+        "--skip-post-train-eval",
+        action="store_true",
+        help="Не гонять evaluate_on_test после train (оценка отдельно через evaluate_r20_full_pipeline).",
+    )
+    parser.add_argument(
+        "--no-trainer-checkpoints",
+        action="store_true",
+        help="Не сохранять checkpoint-* во время train (только save_model в конце; быстрее на Windows).",
+    )
+    parser.add_argument(
         "--debug-collator-meta-tokenization",
         action="store_true",
         help="Один раз печатает какие колонки кроме text1/text2 токенизируются collator'ом и уходят в loss.",
     )
     args = parser.parse_args()
     run_training(args)
+
+def _resolve_effective_max_batches(args, use_precomputed_batches: bool) -> int | None:
+    max_batches = getattr(args, "max_batches", None)
+    max_n = getattr(args, "max_train_samples", None)
+    if max_batches is not None and int(max_batches) <= 0:
+        raise ValueError("--max-batches must be positive")
+    if not use_precomputed_batches:
+        return None
+    if max_batches is not None:
+        if max_n is not None:
+            print("Заданы --max-batches и --max-train-samples; используется --max-batches")
+        return int(max_batches)
+    if max_n is not None:
+        bs = int(args.batch_size)
+        return max(1, (int(max_n) + bs - 1) // bs)
+    return None
+
 
 def run_training(args) -> Dict[str, Any]:
     skip_baseline_test = bool(getattr(args, "skip_baseline_test", False))
@@ -605,7 +673,12 @@ def run_training(args) -> Dict[str, Any]:
         print(f"Найден чекпоинт: {resume_from_checkpoint}, продолжение с этого шага")
 
     samples_done = 0
-    use_chunked = args.max_train_samples is not None and args.max_train_samples > 0
+    use_precomputed_batches_early = bool(getattr(args, "precomputed_batches", "").strip())
+    use_chunked = (
+        args.max_train_samples is not None
+        and args.max_train_samples > 0
+        and not use_precomputed_batches_early
+    )
 
     if resume_from_checkpoint:
         model = SentenceTransformer(resume_from_checkpoint, device=device)
@@ -625,7 +698,10 @@ def run_training(args) -> Dict[str, Any]:
     else:
         model = SentenceTransformer(args.base_model, device=device)
 
-    code_to_text = load_ontology_texts(ONTOLOGY_PATH)
+    ontology_path = resolve_ontology_path(args)
+    if not ontology_path.exists():
+        raise FileNotFoundError(f"ontology not found: {ontology_path}")
+    code_to_text = load_ontology_texts(ontology_path)
     use_precomputed_batches = bool(args.precomputed_batches.strip())
     use_triplets = bool(getattr(args, "triplets_jsonl", "").strip())
     if use_precomputed_batches and args.use_hierarchical_sampler:
@@ -676,9 +752,16 @@ def run_training(args) -> Dict[str, Any]:
             [{"text1": ex.texts[0], "text2": ex.texts[1]} for ex in train_examples]
         ).shuffle(seed=int(args.seed))
 
+    skip_trainer_eval = bool(getattr(args, "skip_trainer_eval", False))
+    skip_post_train_eval = bool(getattr(args, "skip_post_train_eval", False))
+    no_trainer_checkpoints = bool(getattr(args, "no_trainer_checkpoints", False))
+
     if use_triplets:
         valid_dataset = None
         print("Triplet mode: валидация в тренере отключена (eval отдельно через evaluate_r20_full_pipeline).")
+    elif skip_trainer_eval:
+        valid_dataset = None
+        print("Trainer eval: пропуск (--skip-trainer-eval)")
     else:
         valid_examples = build_pairs_from_segments(VALID_SEGMENTS_CSV, code_to_text)
         if not valid_examples:
@@ -693,7 +776,19 @@ def run_training(args) -> Dict[str, Any]:
     if max_n is not None and max_n <= 0:
         raise ValueError("--max-train-samples must be positive")
 
-    if resume_from_checkpoint:
+    effective_max_batches = _resolve_effective_max_batches(args, use_precomputed_batches)
+
+    if use_precomputed_batches:
+        train_dataset = full_train_dataset
+        if effective_max_batches is not None:
+            approx_samples = effective_max_batches * int(args.batch_size)
+            print(
+                f"Train dataset: {len(train_dataset)} сэмплов; "
+                f"лимит {effective_max_batches} предбатчей (~{approx_samples} пар)"
+            )
+        else:
+            print(f"Train dataset: {len(train_dataset)} сэмплов (чекпоинты каждые {args.save_steps} шагов)")
+    elif resume_from_checkpoint:
         train_dataset = full_train_dataset
         print(f"Train dataset: {len(train_dataset)} сэмплов (продолжение с чекпоинта)")
     elif args.resume.strip() and use_chunked:
@@ -783,6 +878,7 @@ def run_training(args) -> Dict[str, Any]:
         batch_sampler_arg = create_precomputed_batch_sampler_factory(
             Path(args.precomputed_batches.strip()),
             fn_pair_frac_max=filter_fn_pair_frac_max,
+            max_batches=effective_max_batches,
         )
         print(f"Batch sampler: precomputed ({args.precomputed_batches.strip()})")
     elif args.use_hierarchical_sampler:
@@ -813,9 +909,17 @@ def run_training(args) -> Dict[str, Any]:
     if use_triplets:
         eval_strategy_arg: str = "no"
         eval_steps_arg = None
+    elif skip_trainer_eval:
+        eval_strategy_arg = "no"
+        eval_steps_arg = None
     else:
         eval_strategy_arg = "steps" if use_save_steps else "epoch"
         eval_steps_arg = save_steps_val if use_save_steps else None
+
+    if no_trainer_checkpoints:
+        save_strategy_arg = "no"
+    else:
+        save_strategy_arg = "steps" if use_save_steps else "epoch"
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(output_dir),
@@ -827,7 +931,7 @@ def run_training(args) -> Dict[str, Any]:
         warmup_ratio=float(args.warmup_ratio),
         seed=int(args.seed),
         logging_steps=50,
-        save_strategy="steps" if use_save_steps else "epoch",
+        save_strategy=save_strategy_arg,
         save_steps=save_steps_val,
         save_total_limit=2,
         eval_strategy=eval_strategy_arg,
@@ -885,8 +989,15 @@ def run_training(args) -> Dict[str, Any]:
     )
     payload: Dict[str, Any] = {}
     try:
+        if use_precomputed_batches:
+            print(
+                "Старт Trainer: FN-фильтрация (если включена) и первый шаг могут занять "
+                "1–5 мин — длинные тексты онтологии, batch=128, CachedMNR."
+            )
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        print("Обучение завершено, сохранение модели...")
         trainer.save_model(str(output_dir))
+        print(f"Модель сохранена: {output_dir}")
 
         final_samples_done = samples_done + len(train_dataset) if use_chunked else None
         if use_chunked:
@@ -894,12 +1005,17 @@ def run_training(args) -> Dict[str, Any]:
                 json.dumps({"samples_done": final_samples_done}, indent=2), encoding="utf-8"
             )
 
-        if skip_baseline_test:
+        if skip_post_train_eval:
+            print("Post-train test: пропуск (--skip-post-train-eval)")
+            original_metrics = {}
+            finetuned_metrics = {}
+        elif skip_baseline_test:
             print("Test (pipeline): пропуск baseline (--skip-baseline-test), только finetuned")
-            original_metrics: Dict[str, float] = {}
+            original_metrics = {}
+            finetuned_metrics = evaluate_on_test(str(output_dir), ontology_path=ontology_path)
         else:
-            original_metrics = evaluate_on_test(args.base_model)
-        finetuned_metrics = evaluate_on_test(str(output_dir))
+            original_metrics = evaluate_on_test(args.base_model, ontology_path=ontology_path)
+            finetuned_metrics = evaluate_on_test(str(output_dir), ontology_path=ontology_path)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -918,6 +1034,8 @@ def run_training(args) -> Dict[str, Any]:
             "warmup_ratio": args.warmup_ratio,
             "save_steps": args.save_steps,
             "max_train_samples": args.max_train_samples,
+            "max_batches": getattr(args, "max_batches", None),
+            "effective_max_batches": effective_max_batches,
             "samples_done": final_samples_done,
             "seed": args.seed,
             "use_hierarchical_sampler": args.use_hierarchical_sampler,
