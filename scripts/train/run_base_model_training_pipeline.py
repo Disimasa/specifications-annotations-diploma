@@ -53,6 +53,7 @@ SEED = 42
 EPOCHS = 1
 FILTER_FN_PAIR_FRAC_MAX = 0.01
 FINETUNE_SCRIPT = PROJECT_DIR / "scripts" / "train" / "finetune_bi_encoder.py"
+TORCHRUN_ENTRY = PROJECT_DIR / "scripts" / "train" / "torchrun_entry.py"
 # curriculum epoch1: 1,0,0 — far/mid/hard; grandfocus = акцент на far (разные grand-ветки)
 CURRICULUM_EPOCH1 = "1,0,0"
 
@@ -144,18 +145,16 @@ def _artifacts_complete(paths: Dict[str, Path]) -> bool:
 
 
 def _ddp_subprocess_env() -> Dict[str, str]:
-    """Windows: PyTorch torchrun без libuv требует USE_LIBUV=0."""
     env = os.environ.copy()
-    if sys.platform == "win32":
-        env["USE_LIBUV"] = "0"
+    env["USE_LIBUV"] = "0"
+    env.setdefault("MASTER_ADDR", "127.0.0.1")
+    env.setdefault("MASTER_PORT", "29500")
     return env
 
 
 def _run_subprocess(cmd: list[str], step: str, *, env: Optional[Dict[str, str]] = None) -> None:
     print(f"\n=== {step} ===")
     print(" ".join(cmd))
-    if env is not None and sys.platform == "win32" and env.get("USE_LIBUV") == "0":
-        print("Windows DDP: USE_LIBUV=0")
     subprocess.run(cmd, check=True, cwd=str(PROJECT_DIR), env=env)
 
 
@@ -436,8 +435,7 @@ def _step_train(
     if use_ddp_run and nproc > 1:
         cmd = [
             sys.executable,
-            "-m",
-            "torch.distributed.run",
+            str(TORCHRUN_ENTRY),
             "--standalone",
             f"--nproc_per_node={nproc}",
             str(FINETUNE_SCRIPT),
@@ -669,11 +667,11 @@ def main() -> None:
     args = parser.parse_args()
     use_ddp_run, nproc = _resolve_ddp_settings(not args.no_ddp, args.nproc_per_node)
     if use_ddp_run:
-        print(f"Обучение: DDP на {nproc} GPU (torch.distributed.run)")
-    elif _cuda_device_count() > 1 and not args.no_ddp:
-        print("Обучение: 1 GPU")
-    elif _cuda_device_count() > 1:
-        print("Обучение: DataParallel (несколько GPU, --no-ddp)")
+        print(f"Обучение: DDP на {nproc} GPU (torchrun)")
+    elif _cuda_device_count() > 1 and args.no_ddp:
+        print("Обучение: in-process (SentenceTransformers DataParallel)")
+    else:
+        print("Обучение: in-process (1 GPU)")
     run_pipeline(
         ontology_path=args.ontology,
         max_train_samples=args.max_train_samples,

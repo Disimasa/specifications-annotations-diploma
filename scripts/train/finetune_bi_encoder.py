@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, List, Sequence
+
+os.environ.setdefault("USE_LIBUV", "0")
 
 import torch
 from datasets import Dataset
