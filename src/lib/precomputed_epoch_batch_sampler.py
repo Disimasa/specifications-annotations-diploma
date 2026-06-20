@@ -164,27 +164,15 @@ class PrecomputedEpochBatchSamplerFactory:
             )
         batches_by_epoch = self.batches_by_epoch
         if self.file_bs and int(batch_size) != self.file_bs:
-            hint = ""
-            file_bs = self.file_bs
-            req_bs = int(batch_size)
-            if file_bs > 0 and req_bs % file_bs == 0 and req_bs // file_bs > 1:
-                hint = (
-                    f" Похоже, Trainer передал global train_batch_size={req_bs} "
-                    f"(per_device={file_bs} × {req_bs // file_bs} GPU)."
-                )
             raise ValueError(
-                f"--batch-size ({req_bs}) должен совпадать с batch_size в файле предбатчей ({file_bs})."
-                f"{hint} Укажите per_device_train_batch_size={file_bs} или перегенерируйте .pt."
+                f"--batch-size ({batch_size}) должен совпадать с batch_size в файле предбатчей ({self.file_bs})."
             )
         if bool(drop_last) != self.file_drop_last:
-            # SentenceTransformerTrainingArguments принудительно ставит drop_last=True в DDP;
-            # состав фиксированных предбатчей от этого не меняется.
-            if not (not self.file_drop_last and bool(drop_last)):
-                raise ValueError(
-                    f"dataloader_drop_last в тренере ({drop_last}) не совпадает с drop_last при генерации "
-                    f"({self.file_drop_last}). Задайте в SentenceTransformerTrainingArguments(dataloader_drop_last=...) "
-                    "или перегенерируйте батчи."
-                )
+            raise ValueError(
+                f"dataloader_drop_last в тренере ({drop_last}) не совпадает с drop_last при генерации "
+                f"({self.file_drop_last}). Задайте в SentenceTransformerTrainingArguments(dataloader_drop_last=...) "
+                "или перегенерируйте батчи."
+            )
         _validate_indices(dataset_len, batches_by_epoch)
         if self.fn_pair_frac_max is not None:
             # Фильтруем батчи по FN-парам (anchor->candidate), где leaf(candidate) содержится в doc_gold_leaves(anchor).

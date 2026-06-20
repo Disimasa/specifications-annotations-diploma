@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import gc
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, List, Sequence
-
-os.environ.setdefault("USE_LIBUV", "0")
 
 import torch
 from datasets import Dataset
@@ -78,8 +75,7 @@ class FinetuneBiEncoderTrainer(SentenceTransformerTrainer):
                         generator=generator,
                         seed=seed,
                     )
-                # SentenceTransformerTrainer передаёт global train_batch_size
-                # (= per_device_train_batch_size × n_gpu); .pt хранит per-device batch_size.
+                # Trainer передаёт global train_batch_size (= per_device × n_gpu); .pt — per-device.
                 batch_size = int(self.args.per_device_train_batch_size)
         return super().get_batch_sampler(
             dataset,
@@ -948,13 +944,7 @@ def run_training(args) -> Dict[str, Any]:
         dataloader_num_workers=dataloader_workers,
         fp16=torch.cuda.is_available(),
         remove_unused_columns=False,
-        accelerator_config={"split_batches": True},
     )
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        print(
-            f"Accelerate split_batches=True: batch {args.batch_size} делится на "
-            f"{torch.cuda.device_count()} GPU (~{int(args.batch_size) // torch.cuda.device_count()} пар/GPU)."
-        )
     if use_custom_batch_sampler or use_triplets:
         note = []
         if use_custom_batch_sampler:
@@ -1007,21 +997,15 @@ def run_training(args) -> Dict[str, Any]:
                 "1–5 мин — длинные тексты онтологии, batch=128, CachedMNR."
             )
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-        if trainer.is_world_process_zero():
-            print("Обучение завершено, сохранение модели...")
+        print("Обучение завершено, сохранение модели...")
         trainer.save_model(str(output_dir))
-        if trainer.is_world_process_zero():
-            print(f"Модель сохранена: {output_dir}")
+        print(f"Модель сохранена: {output_dir}")
 
         final_samples_done = samples_done + len(train_dataset) if use_chunked else None
-        if use_chunked and trainer.is_world_process_zero():
+        if use_chunked:
             (output_dir / "training_state.json").write_text(
                 json.dumps({"samples_done": final_samples_done}, indent=2), encoding="utf-8"
             )
-
-        if not trainer.is_world_process_zero():
-            payload = {"status": "ddp_worker_done"}
-            return payload
 
         if skip_post_train_eval:
             print("Post-train test: пропуск (--skip-post-train-eval)")
