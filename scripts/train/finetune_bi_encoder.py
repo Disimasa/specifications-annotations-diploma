@@ -1004,15 +1004,21 @@ def run_training(args) -> Dict[str, Any]:
                 "1–5 мин — длинные тексты онтологии, batch=128, CachedMNR."
             )
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-        print("Обучение завершено, сохранение модели...")
+        if trainer.is_world_process_zero():
+            print("Обучение завершено, сохранение модели...")
         trainer.save_model(str(output_dir))
-        print(f"Модель сохранена: {output_dir}")
+        if trainer.is_world_process_zero():
+            print(f"Модель сохранена: {output_dir}")
 
         final_samples_done = samples_done + len(train_dataset) if use_chunked else None
-        if use_chunked:
+        if use_chunked and trainer.is_world_process_zero():
             (output_dir / "training_state.json").write_text(
                 json.dumps({"samples_done": final_samples_done}, indent=2), encoding="utf-8"
             )
+
+        if not trainer.is_world_process_zero():
+            payload = {"status": "ddp_worker_done"}
+            return payload
 
         if skip_post_train_eval:
             print("Post-train test: пропуск (--skip-post-train-eval)")

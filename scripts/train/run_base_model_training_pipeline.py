@@ -47,9 +47,11 @@ DEFAULT_FULL_BATCHES = (
 BATCHES_ONTOLOGY = DEFAULT_ONTOLOGY  # эталон для сборки строк; состав батчей — по CSV + кодам
 
 BATCH_SIZE = 128
+MINI_BATCH_SIZE = 32
 SEED = 42
 EPOCHS = 1
 FILTER_FN_PAIR_FRAC_MAX = 0.01
+FINETUNE_SCRIPT = PROJECT_DIR / "scripts" / "train" / "finetune_bi_encoder.py"
 # curriculum epoch1: 1,0,0 — far/mid/hard; grandfocus = акцент на far (разные grand-ветки)
 CURRICULUM_EPOCH1 = "1,0,0"
 
@@ -240,29 +242,44 @@ def _step_ensure_batches(
     )
 
 
-def _step_train(
+def _cuda_device_count() -> int:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return int(torch.cuda.device_count())
+    except ImportError:
+        pass
+    return 0
+
+
+def _resolve_ddp_settings(
+    use_ddp: bool,
+    nproc_per_node: Optional[int],
+) -> tuple[bool, int]:
+    n_gpu = _cuda_device_count()
+    if not use_ddp or n_gpu <= 1:
+        return False, 1
+    nproc = int(nproc_per_node) if nproc_per_node is not None else n_gpu
+    nproc = max(1, min(nproc, n_gpu))
+    return nproc > 1, nproc
+
+
+def _build_finetune_train_namespace(
     ontology_path: Path,
     batches_path: Path,
     model_dir: Path,
     max_train_samples: Optional[int],
     max_batches: Optional[int],
-    force: bool,
-) -> None:
-    if model_dir.is_dir() and any(model_dir.iterdir()) and not force:
-        print(f"Модель уже обучена: {model_dir}")
-        return
-    if force and model_dir.exists():
-        import shutil
-
-        shutil.rmtree(model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    train_args = Namespace(
+    mini_batch_size: int,
+) -> Namespace:
+    return Namespace(
         base_model=BASE_MODEL,
         resume="",
         output_dir=str(model_dir),
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        mini_batch_size=32,
+        mini_batch_size=int(mini_batch_size),
         learning_rate=1e-5,
         warmup_ratio=0.1,
         max_train_samples=max_train_samples,
@@ -294,7 +311,134 @@ def _step_train(
         no_trainer_checkpoints=True,
         debug_collator_meta_tokenization=False,
     )
-    print("\n=== Шаг 3/4: обучение bi-encoder ===")
+
+
+def _namespace_to_finetune_cli(args: Namespace) -> list[str]:
+    cli: list[str] = [
+        "--base-model",
+        str(args.base_model),
+        "--output-dir",
+        str(args.output_dir),
+        "--epochs",
+        str(int(args.epochs)),
+        "--batch-size",
+        str(int(args.batch_size)),
+        "--mini-batch-size",
+        str(int(args.mini_batch_size)),
+        "--learning-rate",
+        str(float(args.learning_rate)),
+        "--warmup-ratio",
+        str(float(args.warmup_ratio)),
+        "--save-steps",
+        str(int(args.save_steps)),
+        "--seed",
+        str(int(args.seed)),
+        "--loss",
+        str(args.loss),
+        "--guide-model",
+        str(args.guide_model),
+        "--gist-relative-margin",
+        str(float(args.gist_relative_margin)),
+        "--curriculum-epoch1",
+        str(args.curriculum_epoch1),
+        "--curriculum-epoch2",
+        str(args.curriculum_epoch2),
+        "--curriculum-epoch3plus",
+        str(args.curriculum_epoch3plus),
+        "--leaf-balance-power",
+        str(float(args.leaf_balance_power)),
+        "--grand-balance-weight",
+        str(float(args.grand_balance_weight)),
+        "--max-scored-candidates",
+        str(int(args.max_scored_candidates)),
+        "--precomputed-batches",
+        str(args.precomputed_batches),
+        "--filter-fn-pair-frac-max",
+        str(float(args.filter_fn_pair_frac_max)),
+        "--ontology-path",
+        str(args.ontology_path),
+        "--triplet-margin",
+        str(float(args.triplet_margin)),
+    ]
+    if args.max_train_samples is not None:
+        cli.extend(["--max-train-samples", str(int(args.max_train_samples))])
+    if args.max_batches is not None:
+        cli.extend(["--max-batches", str(int(args.max_batches))])
+    if args.resume:
+        cli.extend(["--resume", str(args.resume)])
+    if getattr(args, "triplets_jsonl", ""):
+        cli.extend(["--triplets-jsonl", str(args.triplets_jsonl)])
+    if bool(args.use_hierarchical_sampler):
+        cli.append("--use-hierarchical-sampler")
+    if bool(args.disable_guide_safe_hard):
+        cli.append("--disable-guide-safe-hard")
+    if bool(args.no_sampler_fallback_relaxed):
+        cli.append("--no-sampler-fallback-relaxed")
+    if bool(args.no_sampler_diagnostics):
+        cli.append("--no-sampler-diagnostics")
+    if bool(args.dataloader_drop_last):
+        cli.append("--dataloader-drop-last")
+    if bool(args.skip_baseline_test):
+        cli.append("--skip-baseline-test")
+    if bool(args.skip_trainer_eval):
+        cli.append("--skip-trainer-eval")
+    if bool(args.skip_post_train_eval):
+        cli.append("--skip-post-train-eval")
+    if bool(args.no_trainer_checkpoints):
+        cli.append("--no-trainer-checkpoints")
+    if bool(args.debug_collator_meta_tokenization):
+        cli.append("--debug-collator-meta-tokenization")
+    return cli
+
+
+def _step_train(
+    ontology_path: Path,
+    batches_path: Path,
+    model_dir: Path,
+    max_train_samples: Optional[int],
+    max_batches: Optional[int],
+    force: bool,
+    *,
+    use_ddp: bool,
+    nproc_per_node: Optional[int],
+    mini_batch_size: int,
+) -> None:
+    if model_dir.is_dir() and any(model_dir.iterdir()) and not force:
+        print(f"Модель уже обучена: {model_dir}")
+        return
+    if force and model_dir.exists():
+        import shutil
+
+        shutil.rmtree(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    train_args = _build_finetune_train_namespace(
+        ontology_path,
+        batches_path,
+        model_dir,
+        max_train_samples,
+        max_batches,
+        mini_batch_size,
+    )
+    use_ddp_run, nproc = _resolve_ddp_settings(use_ddp, nproc_per_node)
+    finetune_cli = _namespace_to_finetune_cli(train_args)
+
+    if use_ddp_run and nproc > 1:
+        cmd = [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc_per_node={nproc}",
+            str(FINETUNE_SCRIPT),
+            *finetune_cli,
+        ]
+        _run_subprocess(
+            cmd,
+            f"Шаг 3/4: обучение bi-encoder (DDP, {nproc} GPU)",
+        )
+        return
+
+    print("\n=== Шаг 3/4: обучение bi-encoder (1 GPU) ===")
     run_training(train_args)
 
 
@@ -340,6 +484,9 @@ def run_pipeline(
     precomputed_batches: Optional[Path] = None,
     regenerate_batches: bool = False,
     force: bool = False,
+    use_ddp: bool = True,
+    nproc_per_node: Optional[int] = None,
+    mini_batch_size: int = MINI_BATCH_SIZE,
 ) -> Dict[str, Any]:
     ontology_path = ontology_path.resolve()
     if not ontology_path.is_file():
@@ -383,6 +530,9 @@ def run_pipeline(
         max_train_samples,
         max_batches,
         force=force,
+        use_ddp=use_ddp,
+        nproc_per_node=nproc_per_node,
+        mini_batch_size=mini_batch_size,
     )
     eval_results = _step_evaluate(
         ontology_path,
@@ -487,7 +637,31 @@ def main() -> None:
         action="store_true",
         help="Переобучить и переоценить эту онтологию, даже если артефакты уже есть.",
     )
+    parser.add_argument(
+        "--no-ddp",
+        action="store_true",
+        help="Не использовать DDP (обычный python / DataParallel при нескольких GPU).",
+    )
+    parser.add_argument(
+        "--nproc-per-node",
+        type=int,
+        default=None,
+        help="Число GPU для DDP (по умолчанию — все видимые CUDA-устройства).",
+    )
+    parser.add_argument(
+        "--mini-batch-size",
+        type=int,
+        default=MINI_BATCH_SIZE,
+        help="Mini-batch для CachedMultipleNegativesRankingLoss (память одного forward).",
+    )
     args = parser.parse_args()
+    use_ddp_run, nproc = _resolve_ddp_settings(not args.no_ddp, args.nproc_per_node)
+    if use_ddp_run:
+        print(f"Обучение: DDP на {nproc} GPU (torch.distributed.run)")
+    elif _cuda_device_count() > 1 and not args.no_ddp:
+        print("Обучение: 1 GPU")
+    elif _cuda_device_count() > 1:
+        print("Обучение: DataParallel (несколько GPU, --no-ddp)")
     run_pipeline(
         ontology_path=args.ontology,
         max_train_samples=args.max_train_samples,
@@ -496,6 +670,9 @@ def main() -> None:
         precomputed_batches=args.precomputed_batches,
         regenerate_batches=bool(args.regenerate_batches),
         force=bool(args.force),
+        use_ddp=not bool(args.no_ddp),
+        nproc_per_node=args.nproc_per_node,
+        mini_batch_size=int(args.mini_batch_size),
     )
 
 

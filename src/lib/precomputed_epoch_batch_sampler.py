@@ -177,11 +177,14 @@ class PrecomputedEpochBatchSamplerFactory:
                 f"{hint} Укажите per_device_train_batch_size={file_bs} или перегенерируйте .pt."
             )
         if bool(drop_last) != self.file_drop_last:
-            raise ValueError(
-                f"dataloader_drop_last в тренере ({drop_last}) не совпадает с drop_last при генерации "
-                f"({self.file_drop_last}). Задайте в SentenceTransformerTrainingArguments(dataloader_drop_last=...) "
-                "или перегенерируйте батчи."
-            )
+            # SentenceTransformerTrainingArguments принудительно ставит drop_last=True в DDP;
+            # состав фиксированных предбатчей от этого не меняется.
+            if not (not self.file_drop_last and bool(drop_last)):
+                raise ValueError(
+                    f"dataloader_drop_last в тренере ({drop_last}) не совпадает с drop_last при генерации "
+                    f"({self.file_drop_last}). Задайте в SentenceTransformerTrainingArguments(dataloader_drop_last=...) "
+                    "или перегенерируйте батчи."
+                )
         _validate_indices(dataset_len, batches_by_epoch)
         if self.fn_pair_frac_max is not None:
             # Фильтруем батчи по FN-парам (anchor->candidate), где leaf(candidate) содержится в doc_gold_leaves(anchor).
