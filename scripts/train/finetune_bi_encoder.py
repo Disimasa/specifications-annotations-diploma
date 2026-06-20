@@ -75,6 +75,9 @@ class FinetuneBiEncoderTrainer(SentenceTransformerTrainer):
                         generator=generator,
                         seed=seed,
                     )
+                # SentenceTransformerTrainer передаёт global train_batch_size
+                # (= per_device_train_batch_size × n_gpu); .pt хранит per-device batch_size.
+                batch_size = int(self.args.per_device_train_batch_size)
         return super().get_batch_sampler(
             dataset,
             batch_size=batch_size,
