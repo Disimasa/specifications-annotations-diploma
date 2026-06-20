@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from argparse import Namespace
@@ -142,10 +143,20 @@ def _artifacts_complete(paths: Dict[str, Path]) -> bool:
     return True
 
 
-def _run_subprocess(cmd: list[str], step: str) -> None:
+def _ddp_subprocess_env() -> Dict[str, str]:
+    """Windows: PyTorch torchrun без libuv требует USE_LIBUV=0."""
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        env["USE_LIBUV"] = "0"
+    return env
+
+
+def _run_subprocess(cmd: list[str], step: str, *, env: Optional[Dict[str, str]] = None) -> None:
     print(f"\n=== {step} ===")
     print(" ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=str(PROJECT_DIR))
+    if env is not None and sys.platform == "win32" and env.get("USE_LIBUV") == "0":
+        print("Windows DDP: USE_LIBUV=0")
+    subprocess.run(cmd, check=True, cwd=str(PROJECT_DIR), env=env)
 
 
 def _validate_batches_dataset_size(batches_path: Path, max_train_samples: Optional[int]) -> None:
@@ -435,6 +446,7 @@ def _step_train(
         _run_subprocess(
             cmd,
             f"Шаг 3/4: обучение bi-encoder (DDP, {nproc} GPU)",
+            env=_ddp_subprocess_env(),
         )
         return
 
