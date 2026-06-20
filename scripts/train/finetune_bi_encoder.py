@@ -945,7 +945,13 @@ def run_training(args) -> Dict[str, Any]:
         dataloader_num_workers=dataloader_workers,
         fp16=torch.cuda.is_available(),
         remove_unused_columns=False,
+        accelerator_config={"split_batches": True},
     )
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(
+            f"Accelerate split_batches=True: batch {args.batch_size} делится на "
+            f"{torch.cuda.device_count()} GPU (~{int(args.batch_size) // torch.cuda.device_count()} пар/GPU)."
+        )
     if use_custom_batch_sampler or use_triplets:
         note = []
         if use_custom_batch_sampler:
