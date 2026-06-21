@@ -49,7 +49,9 @@ BATCHES_ONTOLOGY = DEFAULT_ONTOLOGY  # эталон для сборки стро
 BATCH_SIZE = 128
 MINI_BATCH_SIZE = 32
 SEED = 42
-EPOCHS = 1
+DEFAULT_TRAIN_EPOCHS = 1
+BATCH_FILE_EPOCHS = 1  # число списков батчей в .pt (не num_train_epochs)
+SAVE_EVAL_STEPS = 250
 FILTER_FN_PAIR_FRAC_MAX = 0.01
 # curriculum epoch1: 1,0,0 — far/mid/hard; grandfocus = акцент на far (разные grand-ветки)
 CURRICULUM_EPOCH1 = "1,0,0"
@@ -77,8 +79,11 @@ def _run_key(
     max_train_samples: Optional[int] = None,
     max_batches: Optional[int] = None,
     trained_model_path: Optional[Path] = None,
+    epochs: int = DEFAULT_TRAIN_EPOCHS,
 ) -> str:
     key = ontology_sha256[:16]
+    if int(epochs) != DEFAULT_TRAIN_EPOCHS:
+        key = f"{key}_ep{int(epochs)}"
     if max_batches is not None:
         key = f"{key}_b{int(max_batches)}"
     elif max_train_samples is not None:
@@ -87,6 +92,16 @@ def _run_key(
         model_hash = hashlib.sha256(str(trained_model_path).encode("utf-8")).hexdigest()[:8]
         key = f"{key}_m{model_hash}"
     return key
+
+
+def _resolve_eval_model_dir(model_dir: Path) -> Path:
+    """Для шага 4: best/ по минимальному eval_loss, иначе корень model_dir."""
+    best = model_dir / "best"
+    if best.is_dir() and any(best.iterdir()):
+        print(f"Оценка: лучшая модель (eval_loss) — {best}")
+        return best
+    print(f"Оценка: каталог best/ пуст или отсутствует, используем {model_dir}")
+    return model_dir
 
 
 def _resolve_trained_model_path(path: Path) -> Path:
@@ -215,7 +230,7 @@ def _step_ensure_batches(
         "--seed",
         str(SEED),
         "--epochs",
-        str(EPOCHS),
+        str(BATCH_FILE_EPOCHS),
         "--relative-margin",
         "0.05",
         "--curriculum-epoch1",
@@ -249,6 +264,7 @@ def _step_train(
     max_batches: Optional[int],
     force: bool,
     mini_batch_size: int,
+    epochs: int,
 ) -> None:
     if model_dir.is_dir() and any(model_dir.iterdir()) and not force:
         print(f"Модель уже обучена: {model_dir}")
@@ -262,14 +278,14 @@ def _step_train(
         base_model=BASE_MODEL,
         resume="",
         output_dir=str(model_dir),
-        epochs=EPOCHS,
+        epochs=int(epochs),
         batch_size=BATCH_SIZE,
         mini_batch_size=int(mini_batch_size),
         learning_rate=1e-5,
         warmup_ratio=0.1,
         max_train_samples=max_train_samples,
         max_batches=max_batches,
-        save_steps=500,
+        save_steps=SAVE_EVAL_STEPS,
         seed=SEED,
         use_hierarchical_sampler=False,
         loss="cached_mnr",
@@ -291,28 +307,32 @@ def _step_train(
         skip_baseline_test=True,
         filter_fn_pair_frac_max=FILTER_FN_PAIR_FRAC_MAX,
         ontology_path=str(ontology_path),
-        skip_trainer_eval=True,
+        skip_trainer_eval=False,
         skip_post_train_eval=True,
-        no_trainer_checkpoints=True,
+        no_trainer_checkpoints=False,
         debug_collator_meta_tokenization=False,
     )
-    print("\n=== Шаг 3/4: обучение bi-encoder ===")
+    print(
+        f"\n=== Шаг 3/4: обучение bi-encoder ({int(epochs)} эпох, "
+        f"eval/save каждые {SAVE_EVAL_STEPS} шагов, best/ по eval_loss) ==="
+    )
     run_training(train_args)
 
 
 def _step_evaluate(
     ontology_path: Path,
     model_dir: Path,
-    embeddings_path: Path,
     eval_result_path: Path,
     force: bool,
-) -> Dict[str, dict]:
+) -> tuple[Dict[str, dict], Path]:
     if eval_result_path.exists() and not force:
         print(f"Оценка уже есть: {eval_result_path}")
-        return json.loads(eval_result_path.read_text(encoding="utf-8"))
+        cached = json.loads(eval_result_path.read_text(encoding="utf-8"))
+        return cached, _resolve_eval_model_dir(model_dir)
+    eval_model_dir = _resolve_eval_model_dir(model_dir)
     eval_args = Namespace(
         ontology=ontology_path,
-        model=str(model_dir),
+        model=str(eval_model_dir),
         test_csv=PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test.csv",
         test_docs_csv=PROJECT_DIR / "data" / "gold" / "gisnauka_samples_test_docs.csv",
         gold_jsonl=PROJECT_DIR / "data" / "gold" / "test_set_manual_draft.jsonl",
@@ -323,7 +343,7 @@ def _step_evaluate(
         rerank_top_k=DEFAULT_RERANK_TOP_K,
         confidence_aggregation=DEFAULT_CONFIDENCE_AGGREGATION,
         no_filter_segments=not DEFAULT_FILTER_SEGMENTS,
-        emb=embeddings_path,
+        emb=None,
         k=EVAL_K,
     )
     print("\n=== Шаг 4/4: полная оценка R@20 ===")
@@ -331,7 +351,7 @@ def _step_evaluate(
     eval_result_path.parent.mkdir(parents=True, exist_ok=True)
     eval_result_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Сохранено: {eval_result_path}")
-    return results
+    return results, eval_model_dir
 
 
 def run_pipeline(
@@ -343,6 +363,7 @@ def run_pipeline(
     regenerate_batches: bool = False,
     force: bool = False,
     mini_batch_size: int = MINI_BATCH_SIZE,
+    epochs: int = DEFAULT_TRAIN_EPOCHS,
 ) -> Dict[str, Any]:
     ontology_path = ontology_path.resolve()
     if not ontology_path.is_file():
@@ -354,7 +375,9 @@ def run_pipeline(
 
     batches_path = _resolve_precomputed_batches(precomputed_batches)
     ontology_sha256 = _sha256_file(ontology_path)
-    run_key = _run_key(ontology_sha256, max_train_samples, max_batches, resolved_model_path)
+    run_key = _run_key(
+        ontology_sha256, max_train_samples, max_batches, resolved_model_path, epochs=int(epochs)
+    )
     paths = _artifact_paths(run_key, batches_path, resolved_model_path)
 
     state = _load_state()
@@ -387,11 +410,11 @@ def run_pipeline(
         max_batches,
         force=force,
         mini_batch_size=mini_batch_size,
+        epochs=int(epochs),
     )
-    eval_results = _step_evaluate(
+    eval_results, eval_model_dir = _step_evaluate(
         ontology_path,
         paths["model_dir"],
-        paths["embeddings"],
         paths["eval_result"],
         force=force,
     )
@@ -400,9 +423,11 @@ def run_pipeline(
         "run_key": run_key,
         "ontology_path": str(ontology_path),
         "ontology_sha256": ontology_sha256,
+        "epochs": int(epochs),
         "max_train_samples": max_train_samples,
         "max_batches": max_batches,
         "trained_model_path": str(paths["model_dir"]),
+        "eval_model_dir": str(eval_model_dir),
         "base_model": BASE_MODEL,
         "embeddings_path": str(paths["embeddings"]),
         "batches_path": str(paths["batches"]),
@@ -423,7 +448,8 @@ def run_pipeline(
 
     print("\n=== Пайплайн завершён ===")
     print(f"  run_key: {run_key}")
-    print(f"  модель: {paths['model_dir']}")
+    print(f"  модель (train): {paths['model_dir']}")
+    print(f"  модель (eval):  {eval_model_dir}")
     if "test_gisnauka_docs" in eval_results:
         r20 = eval_results["test_gisnauka_docs"].get("R@20", 0.0)
         print(f"  test_gisnauka_docs R@20: {r20:.4f}")
@@ -500,7 +526,19 @@ def main() -> None:
             f"По умолчанию {MINI_BATCH_SIZE}."
         ),
     )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=DEFAULT_TRAIN_EPOCHS,
+        help=(
+            f"Число эпох обучения bi-encoder (Trainer). "
+            f"Eval и checkpoint каждые {SAVE_EVAL_STEPS} шагов; лучшая модель — model_dir/best/. "
+            f"По умолчанию {DEFAULT_TRAIN_EPOCHS}."
+        ),
+    )
     args = parser.parse_args()
+    if int(args.epochs) < 1:
+        parser.error("--epochs должен быть >= 1")
     run_pipeline(
         ontology_path=args.ontology,
         max_train_samples=args.max_train_samples,
@@ -510,6 +548,7 @@ def main() -> None:
         regenerate_batches=bool(args.regenerate_batches),
         force=bool(args.force),
         mini_batch_size=int(args.mini_batch_size),
+        epochs=int(args.epochs),
     )
 
 

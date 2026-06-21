@@ -28,14 +28,14 @@ class EmbeddingAnnotator:
         use_precomputed_embeddings: bool = True,
         device: str | None = None,
     ) -> None:
-        requested_device = (device or "cpu").strip().lower()
-        if requested_device == "gpu":
-            requested_device = "cuda"
-        if requested_device == "cuda" and not torch.cuda.is_available():
-            requested_device = "cpu"
-        self.device = requested_device
-
-        self.model = SentenceTransformer(model_name, device=self.device)
+        if device is not None:
+            d = device.strip().lower()
+            if d == "gpu":
+                d = "cuda"
+            self.model = SentenceTransformer(model_name, device=d)
+        else:
+            self.model = SentenceTransformer(model_name)
+        self.device = str(self.model.device)
 
         self.cross_encoder_model = cross_encoder_model
         self._cross_encoder = None
@@ -59,6 +59,7 @@ class EmbeddingAnnotator:
         self.precomputed_embeddings_path: Optional[Path] = emb_path
 
         if emb_path is not None:
+            print(f"Загружены предрасчитанные эмбеддинги: {emb_path}", flush=True)
             self._competency_embeddings = self._load_precomputed_embeddings(emb_path)
         else:
             self._competency_embeddings = self._encode_competencies()
@@ -89,11 +90,15 @@ class EmbeddingAnnotator:
             comp_ids.append(comp.id)
         if not texts:
             return {}
+        print(f"Кодируем {len(texts)} кодов онтологии на {self.device}...", flush=True)
         embeddings = self.model.encode(
             texts,
             convert_to_tensor=True,
             normalize_embeddings=True,
+            batch_size=64,
+            show_progress_bar=True,
         )
+        print("Эмбеддинги онтологии готовы.", flush=True)
         return {cid: embeddings[i] for i, cid in enumerate(comp_ids)}
 
     def _load_precomputed_embeddings(self, path: Path) -> Dict[str, torch.Tensor]:

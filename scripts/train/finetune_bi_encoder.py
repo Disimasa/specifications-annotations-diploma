@@ -650,12 +650,36 @@ def _resolve_effective_max_batches(args, use_precomputed_batches: bool) -> int |
     return None
 
 
+def _print_device_diagnostics() -> None:
+    import os
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cuda_ok = torch.cuda.is_available()
+    n_gpu = torch.cuda.device_count() if cuda_ok else 0
+    print(f"Device: {'cuda' if cuda_ok else 'cpu'} (torch.cuda.device_count={n_gpu})")
+    if cuda_visible is not None:
+        print(f"CUDA_VISIBLE_DEVICES={cuda_visible!r}")
+        if cuda_visible.strip() in ("", "-1"):
+            print(
+                "Внимание: CUDA_VISIBLE_DEVICES пустой или -1 — PyTorch не видит GPU. "
+                'Для одной карты: set CUDA_VISIBLE_DEVICES=0 (cmd) или $env:CUDA_VISIBLE_DEVICES="0" (PowerShell).'
+            )
+    elif not cuda_ok:
+        print(
+            "CUDA недоступна (драйвер / CUDA-сборка PyTorch). "
+            "Обучение на CPU с batch=128 и BGE-M3 может оборваться по RAM без traceback."
+        )
+    if cuda_ok:
+        for i in range(n_gpu):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+
+
 def run_training(args) -> Dict[str, Any]:
     skip_baseline_test = bool(getattr(args, "skip_baseline_test", False))
     filter_fn_pair_frac_max = getattr(args, "filter_fn_pair_frac_max", None)
     debug_collator_meta_tokenization = bool(getattr(args, "debug_collator_meta_tokenization", False))
+    _print_device_diagnostics()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
 
     base_output_dir = Path(args.output_dir)
     resume_path = Path(args.resume.strip()) if args.resume.strip() else None
@@ -867,7 +891,10 @@ def run_training(args) -> Dict[str, Any]:
         train_loss = losses.CachedMultipleNegativesRankingLoss(
             model, mini_batch_size=int(args.mini_batch_size), show_progress_bar=False
         )
-        print("Loss: CachedMultipleNegativesRankingLoss")
+        print(
+            f"Loss: CachedMultipleNegativesRankingLoss "
+            f"(mini_batch_size={int(args.mini_batch_size)}, train batch={int(args.batch_size)})"
+        )
 
     output_dir = base_output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -996,7 +1023,14 @@ def run_training(args) -> Dict[str, Any]:
                 "Старт Trainer: FN-фильтрация (если включена) и первый шаг могут занять "
                 "1–5 мин — длинные тексты онтологии, batch=128, CachedMNR."
             )
-        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        try:
+            trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        except BaseException:
+            import traceback
+
+            print("\n=== Ошибка в trainer.train() ===", flush=True)
+            traceback.print_exc()
+            raise
         print("Обучение завершено, сохранение модели...")
         trainer.save_model(str(output_dir))
         print(f"Модель сохранена: {output_dir}")

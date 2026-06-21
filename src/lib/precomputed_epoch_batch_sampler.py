@@ -185,25 +185,29 @@ class PrecomputedEpochBatchSamplerFactory:
                     f"но в train_dataset колонки: {sorted(cols)}. Missing={sorted(missing)}"
                 )
 
-            leaf_cache: dict[int, str] = {}
-            gold_cache: dict[int, frozenset[str]] = {}
+            print(
+                f"FN-фильтрация: загрузка leaf/doc_gold_leaves для {dataset_len} строк "
+                "(один проход, без random dataset[idx])...",
+                flush=True,
+            )
+            leaves_col = dataset["leaf"]
+            gold_col = dataset["doc_gold_leaves"]
+            gold_sets: List[frozenset[str]] = [
+                frozenset(c.strip() for c in str(g).split(";") if c.strip()) for g in gold_col
+            ]
 
             def get_leaf(idx: int) -> str:
-                if idx not in leaf_cache:
-                    leaf_cache[idx] = str(dataset[idx]["leaf"])
-                return leaf_cache[idx]
+                return str(leaves_col[idx])
 
             def get_gold(idx: int) -> frozenset[str]:
-                if idx not in gold_cache:
-                    raw = str(dataset[idx].get("doc_gold_leaves") or "")
-                    gold_cache[idx] = frozenset(c.strip() for c in raw.split(";") if c.strip())
-                return gold_cache[idx]
+                return gold_sets[idx]
 
             filtered_by_epoch: List[List[List[int]]] = []
             n_raw_batches = len(batches_by_epoch[0]) if batches_by_epoch else 0
             print(
                 f"FN-фильтрация предбатчей (fn_pair_frac_max={self.fn_pair_frac_max}): "
-                f"{n_raw_batches} батчей × {len(batches_by_epoch)} эпох..."
+                f"{n_raw_batches} батчей × {len(batches_by_epoch)} эпох...",
+                flush=True,
             )
             for epoch_batches in batches_by_epoch:
                 new_epoch_batches: List[List[int]] = []
@@ -245,7 +249,8 @@ class PrecomputedEpochBatchSamplerFactory:
             batches_by_epoch = [eb[:min_len] for eb in filtered_by_epoch]
             print(
                 f"FN-фильтрация: осталось {min_len}/{n_raw_batches} батчей на эпоху "
-                f"({100.0 * min_len / n_raw_batches:.1f}%)"
+                f"({100.0 * min_len / n_raw_batches:.1f}%)",
+                flush=True,
             )
 
         if self.max_batches is not None:
