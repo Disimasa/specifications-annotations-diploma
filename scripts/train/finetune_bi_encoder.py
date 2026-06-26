@@ -310,7 +310,7 @@ class SaveBestToDirCallback(TrainerCallback):
         self.greater_is_better = greater_is_better
         self.best_value = None
 
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+    def on_evaluate(self, args, state, control, metrics=None, model=None, **kwargs):
         if metrics is None or self.metric not in metrics:
             return control
         value = metrics[self.metric]
@@ -324,13 +324,21 @@ class SaveBestToDirCallback(TrainerCallback):
             or (self.greater_is_better and value > self.best_value)
             or (not self.greater_is_better and value < self.best_value)
         )
-        if is_better:
-            self.best_value = value
-            trainer = getattr(self, "trainer", None)
-            if trainer is not None and state.is_world_process_zero:
-                self.best_dir.mkdir(parents=True, exist_ok=True)
-                trainer.save_model(str(self.best_dir))
-                print(f"  [best] {self.metric}={value:.4f} -> {self.best_dir}")
+        if not is_better:
+            return control
+        self.best_value = value
+        if not state.is_world_process_zero:
+            return control
+        self.best_dir.mkdir(parents=True, exist_ok=True)
+        trainer = kwargs.get("trainer") or getattr(self, "trainer", None)
+        if trainer is not None:
+            trainer.save_model(str(self.best_dir))
+        elif model is not None:
+            model.save(str(self.best_dir))
+        else:
+            print(f"  [best] {self.metric}={value:.4f}, но model/trainer недоступны — best/ не сохранён")
+            return control
+        print(f"  [best] {self.metric}={value:.4f} -> {self.best_dir}")
         return control
 
 

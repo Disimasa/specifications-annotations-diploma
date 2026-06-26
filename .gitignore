@@ -2,5 +2,5 @@
 venv
 keys
 .env
-data/gold/test_set_manual_draft.jsonl
-models
+models/**
+!models/README_TRAIN.md

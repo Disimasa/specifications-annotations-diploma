@@ -74,24 +74,19 @@ def _resolve_precomputed_batches(
     return DEFAULT_FULL_BATCHES
 
 
-def _run_key(
-    ontology_sha256: str,
-    max_train_samples: Optional[int] = None,
-    max_batches: Optional[int] = None,
-    trained_model_path: Optional[Path] = None,
-    epochs: int = DEFAULT_TRAIN_EPOCHS,
-) -> str:
-    key = ontology_sha256[:16]
-    if int(epochs) != DEFAULT_TRAIN_EPOCHS:
-        key = f"{key}_ep{int(epochs)}"
-    if max_batches is not None:
-        key = f"{key}_b{int(max_batches)}"
-    elif max_train_samples is not None:
-        key = f"{key}_n{int(max_train_samples)}"
-    if trained_model_path is not None:
-        model_hash = hashlib.sha256(str(trained_model_path).encode("utf-8")).hexdigest()[:8]
-        key = f"{key}_m{model_hash}"
-    return key
+def _run_key(ontology_sha256: str) -> str:
+    """Уникальный ключ запуска: префикс онтологии + UTC-время (микросекунды)."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    return f"{ontology_sha256[:8]}_{ts}"
+
+
+def _ontology_embeddings_cache_path(ontology_sha256: str) -> Path:
+    """Общий кэш base-эмбеддингов по хешу онтологии (не привязан к run_key)."""
+    return (
+        PIPELINE_ROOT
+        / "ontology_emb_cache"
+        / f"{ontology_sha256[:16]}_USER-bge-m3.npz"
+    )
 
 
 def _resolve_eval_model_dir(model_dir: Path) -> Path:
@@ -114,6 +109,7 @@ def _resolve_trained_model_path(path: Path) -> Path:
 def _artifact_paths(
     run_key: str,
     batches_path: Path,
+    ontology_sha256: str,
     trained_model_path: Optional[Path] = None,
 ) -> Dict[str, Path]:
     root = PIPELINE_ROOT / "ontology_runs" / run_key
@@ -123,7 +119,7 @@ def _artifact_paths(
         model_dir = PROJECT_DIR / "models" / "bi-encoder-pipeline" / run_key
     return {
         "root": root,
-        "embeddings": root / "ontology_emb_USER-bge-m3.npz",
+        "embeddings": _ontology_embeddings_cache_path(ontology_sha256),
         "batches": batches_path,
         "model_dir": model_dir,
         "eval_result": root / "eval_result.json",
@@ -140,20 +136,6 @@ def _load_state() -> Dict[str, Any]:
 def _save_state(state: Dict[str, Any]) -> None:
     PIPELINE_ROOT.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _artifacts_complete(paths: Dict[str, Path]) -> bool:
-    required = ("embeddings", "model_dir", "eval_result")
-    for key in required:
-        p = paths[key]
-        if key == "model_dir":
-            if not p.is_dir():
-                return False
-            if not any(p.iterdir()):
-                return False
-        elif not p.is_file():
-            return False
-    return True
 
 
 def _run_subprocess(cmd: list[str], step: str) -> None:
@@ -375,26 +357,15 @@ def run_pipeline(
 
     batches_path = _resolve_precomputed_batches(precomputed_batches)
     ontology_sha256 = _sha256_file(ontology_path)
-    run_key = _run_key(
-        ontology_sha256, max_train_samples, max_batches, resolved_model_path, epochs=int(epochs)
-    )
-    paths = _artifact_paths(run_key, batches_path, resolved_model_path)
+    run_key = _run_key(ontology_sha256)
+    paths = _artifact_paths(run_key, batches_path, ontology_sha256, resolved_model_path)
 
-    state = _load_state()
-    cached_run = state.get("runs", {}).get(run_key)
-    if cached_run and _artifacts_complete(paths) and not force:
-        print("Эта онтология уже обучена и оценена, артефакты на месте.")
-        print(f"  run_key: {run_key}")
-        print(f"  модель: {paths['model_dir']}")
-        print(f"  оценка: {paths['eval_result']}")
-        print("Для повторного запуска укажите --force")
-        return cached_run
+    print(f"run_key: {run_key}")
 
     paths["root"].mkdir(parents=True, exist_ok=True)
     started_at = datetime.now(timezone.utc).isoformat()
 
-    if force and paths["embeddings"].exists():
-        paths["embeddings"].unlink()
+    paths["embeddings"].parent.mkdir(parents=True, exist_ok=True)
     _step_precompute_embeddings(ontology_path, paths["embeddings"])
 
     _step_ensure_batches(batches_path, max_train_samples, regenerate_batches=regenerate_batches)
@@ -441,6 +412,7 @@ def run_pipeline(
         json.dumps(pipeline_result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    state = _load_state()
     state["last_run"] = pipeline_result
     state["runs"] = state.get("runs", {})
     state["runs"][run_key] = pipeline_result
@@ -459,8 +431,8 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Пайплайн сравнения онтологий: общие предбатчи → эмбеддинги → обучение → R@20. "
-            "При смене онтологии пересчитываются только эмбеддинги, модель и метрики."
+            "Пайплайн: предбатчи → эмбеддинги → обучение → R@20. "
+            "Каждый запуск получает уникальный run_key (время UTC); старые прогоны не перезаписываются."
         )
     )
     parser.add_argument(
@@ -515,7 +487,10 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Переобучить и переоценить эту онтологию, даже если артефакты уже есть.",
+        help=(
+            "Переобучить, если model_dir уже существует (--trained-model-path), "
+            "или перезаписать eval в каталоге этого run."
+        ),
     )
     parser.add_argument(
         "--mini-batch-size",
