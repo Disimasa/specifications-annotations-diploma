@@ -278,3 +278,18 @@ python scripts\train\run_base_model_training_pipeline.py --ontology data\ontolog
   test_gisnauka_docs_doc_level: R@20=0.5838  P@20=0.0728  MRR@20=0.4186  R@M=0.2288  P@M=0.2288  n=709
   valid: R@20=0.5377  P@20=0.0769  MRR@20=0.3845  R@M=0.2058  P@M=0.2068  n=1419
   valid_doc_level: R@20=0.5486  P@20=0.0716  MRR@20=0.3839  R@M=0.2046  P@M=0.2046  n=1419
+
+## Онтология YaGPT best from 3 эпохи
+```shell
+python scripts\train\run_base_model_training_pipeline.py --ontology data\ontology_grnti_with_yagpt.json --mini-batch-size 4 --epochs 3
+```
+
+--- Summary ---
+  test_gisnauka: R@20=0.5093  P@20=0.0851  MRR@20=0.3776  R@M=0.1796  P@M=0.1796  n=63
+  test_gisnauka_doc_level: R@20=0.5217  P@20=0.0865  MRR@20=0.4369  R@M=0.2156  P@M=0.2156  n=63
+  test_gisnauka_docs: R@20=0.5668  P@20=0.0823  MRR@20=0.4211  R@M=0.2323  P@M=0.2327  n=709
+  test_gisnauka_docs_doc_level: R@20=0.5929  P@20=0.0743  MRR@20=0.4306  R@M=0.2449  P@M=0.2449  n=709
+  gold_jsonl: R@20=0.0000  P@20=0.0000  MRR@20=0.0000  R@M=0.0000  P@M=0.0000  n=0
+  gold_jsonl_doc_level: R@20=0.0000  P@20=0.0000  MRR@20=0.0000  R@M=0.0000  P@M=0.0000  n=0
+  valid: R@20=0.5370  P@20=0.0813  MRR@20=0.3780  R@M=0.2067  P@M=0.2079  n=1419
+  valid_doc_level: R@20=0.5612  P@20=0.0735  MRR@20=0.3896  R@M=0.2169  P@M=0.2169  n=1419

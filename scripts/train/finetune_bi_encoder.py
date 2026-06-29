@@ -938,10 +938,10 @@ def run_training(args) -> Dict[str, Any]:
     else:
         batch_sampler_arg = BatchSamplers.NO_DUPLICATES
 
-    # Кастомный batch_sampler и triplet-загрузка: num_workers>0 на Windows часто даёт pickle/CUDA IPC ошибки.
-    # («Can't pickle ...» / «pickle data was truncated» при spawn). Для кастомного callable — только главный процесс.
+    # num_workers>0 на Windows (spawn): pickle/CUDA IPC, иногда grad_norm=0 с CachedMNR.
+    # Держим 0 для всех режимов — надёжнее, чем +2 workers на CPU.
     use_custom_batch_sampler = bool(use_precomputed_batches or args.use_hierarchical_sampler)
-    dataloader_workers = 0 if (use_custom_batch_sampler or use_triplets) else 2
+    dataloader_workers = 0
 
     if use_triplets:
         eval_strategy_arg: str = "no"
